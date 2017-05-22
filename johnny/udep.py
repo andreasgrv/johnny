@@ -1,6 +1,8 @@
+import os
+import six
 import codecs
 import json
-import six
+import re
 from collections import Counter
 
 # TODO : compare what we get from this loader with what we get from CONLL script
@@ -78,21 +80,71 @@ class Token(object):
         except Exception:
             return dict()
 
-def load_conllu(filename):
-    """ Read in conll file and return a list of sentences """
-    CONLLU_COMMENT = '#'
-    sents = []
-    with codecs.open(filename, 'r', encoding='utf-8') as inp:
-        tokens = []
-        for line in inp:
-            line = line.rstrip()
-            # we ignore documents for the time being
-            if tokens and not line:
-                sents.append(Sentence(tokens))
-                tokens = []
-            if line and not line.startswith(CONLLU_COMMENT):
-                tokens.append(Token(*line.split('\t')))
-    return sents
+
+class UDepLoader(object):
+    """Loader for universal dependencies datasets"""
+    LANG_FOLDER_REGEX = 'UD_(?P<lang>[A-Za-z\-\_]+)'
+    DATA_ENV_VAR = 'CONLL_DATA'
+    PREFIX = 'UD_'
+    TRAIN_SUFFIX = 'ud-train.conllu'
+    DEV_SUFFIX = 'ud-dev.conllu'
+
+    def __init__(self, datafolder=None):
+        super(UDepLoader, self).__init__()
+        try:
+            self.datafolder = datafolder or os.environ[self.DATA_ENV_VAR]
+        except KeyError:
+            raise ValueError('You need to specify the path to the universal dependency '
+                'root folder either using the datafolder argument or by '
+                'setting the %s environment variable.' % self.DATA_ENV_VAR)
+        self.lang_folders = dict()
+        for lang_folder in os.listdir(self.datafolder):
+            match = re.match(self.LANG_FOLDER_REGEX, lang_folder)
+            lang = match.groupdict()['lang']
+            self.lang_folders[lang] = lang_folder
+
+    @staticmethod
+    def load_conllu(path):
+        """ Read in conll file and return a list of sentences """
+        CONLLU_COMMENT = '#'
+        sents = []
+        with codecs.open(path, 'r', encoding='utf-8') as inp:
+            tokens = []
+            for line in inp:
+                line = line.rstrip()
+                # we ignore documents for the time being
+                if tokens and not line:
+                    sents.append(Sentence(tokens))
+                    tokens = []
+                if line and not line.startswith(CONLLU_COMMENT):
+                    tokens.append(Token(*line.split('\t')))
+        return sents
+
+    def load_train(self, lang):
+        p = os.path.join(self.datafolder, self.lang_folders[lang])
+        train_filename = [fn for fn in os.listdir(p) 
+                        if fn.endswith(self.TRAIN_SUFFIX)]
+        if train_filename:
+            train_filename = train_filename[0]
+            train_path = os.path.join(p, train_filename)
+            return self.load_conllu(train_path)
+        else:
+            raise "Couldn't find a %s file for %s" % (lang, self.TRAIN_SUFFIX)
+
+    def load_dev(self, lang):
+        p = os.path.join(self.datafolder, self.lang_folders[lang])
+        dev_filename = [fn for fn in os.listdir(p) 
+                        if fn.endswith(self.DEV_SUFFIX)]
+        if dev_filename:
+            dev_filename = dev_filename[0]
+            dev_path = os.path.join(p, dev_filename)
+            return self.load_conllu(dev_path)
+        else:
+            raise "Couldn't find a %s file for %s" % (lang, self.DEV_SUFFIX)
+
+    @property
+    def langs(self):
+        return self.lang_folders.keys()
 
 
 class Vocab(object):
