@@ -7,6 +7,17 @@ from collections import Counter
 
 # TODO : compare what we get from this loader with what we get from CONLL script
 
+
+def py2repr(f):
+    def func(*args, **kwargs):
+        x = f(*args, **kwargs)
+        if six.PY2:
+            return x.encode('utf-8')
+        else:
+            return x
+    return func
+    
+
 class Sentence(object):
 
     def __init__(self, tokens=None):
@@ -18,8 +29,9 @@ class Sentence(object):
     def __getitem__(self, index):
         return self.tokens[index]
 
+    @py2repr
     def __repr__(self):
-        return ' '.join(token.form for token in self.tokens).encode('utf-8')
+        return ' '.join(token.form for token in self.tokens)
 
     def __len__(self):
         return len(self.tokens)
@@ -59,8 +71,9 @@ class Token(object):
             else:
                 setattr(self, Token.CONLLU_ATTRS[i], prop)
 
+    @py2repr
     def __repr__(self):
-        return '\t'.join(getattr(self, attr) for attr in Token.CONLLU_ATTRS).encode('utf-8')
+        return '\t'.join(six.text_type(getattr(self, attr)) for attr in Token.CONLLU_ATTRS)
     
     def displacy_word(self, universal_pos=True):
         """ return a dictionary that matches displacy format """
