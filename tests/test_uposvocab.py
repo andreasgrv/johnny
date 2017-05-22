@@ -1,5 +1,5 @@
 import pytest
-from johnny.udep import UPOSVocab
+from johnny.dep import UPOSVocab
 
 def test_basic():
     p = UPOSVocab()

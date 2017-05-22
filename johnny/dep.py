@@ -48,11 +48,15 @@ class Sentence(object):
         return [t.head for t in self.tokens]
 
     @property
-    def utags(self):
+    def arctags(self):
+        return [t.deprel.split(':')[0] for t in self.tokens]
+
+    @property
+    def upostags(self):
         return [t.upostag for t in self.tokens]
 
     @property
-    def xtags(self):
+    def xpostags(self):
         return [t.xpostag for t in self.tokens]
 
 class Token(object):
@@ -116,6 +120,9 @@ class UDepLoader(object):
             lang = match.groupdict()['lang']
             self.lang_folders[lang] = lang_folder
 
+    def __repr__(self):
+        return '<UDepLoader object from folder %s>' % self.datafolder
+
     @staticmethod
     def load_conllu(path):
         """ Read in conll file and return a list of sentences """
@@ -157,7 +164,7 @@ class UDepLoader(object):
 
     @property
     def langs(self):
-        return self.lang_folders.keys()
+        return list(six.viewkeys(self.lang_folders))
 
 
 class Vocab(object):

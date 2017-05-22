@@ -1,4 +1,4 @@
-from johnny.udep import Vocab
+from johnny.dep import Vocab
 
 def test_from_token_list():
     s = 'daybreak at the bottom of the lake' # note there are 2 "the"
