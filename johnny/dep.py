@@ -121,7 +121,8 @@ class UDepLoader(object):
             self.lang_folders[lang] = lang_folder
 
     def __repr__(self):
-        return '<UDepLoader object from folder %s>' % self.datafolder
+        return ('<UDepLoader object from folder %s with %d languages>'
+                % (self.datafolder, len(self.langs)))
 
     @staticmethod
     def load_conllu(path):
@@ -149,7 +150,8 @@ class UDepLoader(object):
             train_path = os.path.join(p, train_filename)
             return self.load_conllu(train_path)
         else:
-            raise "Couldn't find a %s file for %s" % (lang, self.TRAIN_SUFFIX)
+            raise ValueError("Couldn't find a %s file for %s"
+                             % (lang, self.TRAIN_SUFFIX))
 
     def load_dev(self, lang):
         p = os.path.join(self.datafolder, self.lang_folders[lang])
@@ -160,7 +162,8 @@ class UDepLoader(object):
             dev_path = os.path.join(p, dev_filename)
             return self.load_conllu(dev_path)
         else:
-            raise "Couldn't find a %s file for %s" % (lang, self.DEV_SUFFIX)
+            raise ValueError("Couldn't find a %s file for %s"
+                             % (lang, self.DEV_SUFFIX))
 
     @property
     def langs(self):
@@ -275,8 +278,75 @@ class UPOSVocab(object):
         self.index = dict([(key, index) for index, key in enumerate(self.tags)])
 
     def __repr__(self):
-        return ('UPOSVocab object\nnum tags: %d\nuse_unk: %s'
-                % (len(self), self.use_unk))
+        return ('UPOSVocab object\nnum tags: %d\n' % (len(self), self.use_unk))
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, key):
+        return self.index[key]
+
+    def encode(self, tags):
+        """tags : iterable of tags """
+        return [self.index[tag] for tag in tags]
+
+
+class UDepVocab(object):
+    """ Universal dependency relations label vocabulary.
+    Alphabetical listing
+
+    acl: clausal modifier of noun (adjectival clause)
+    advcl: adverbial clause modifier
+    advmod: adverbial modifier
+    amod: adjectival modifier
+    appos: appositional modifier
+    aux: auxiliary
+    case: case marking
+    cc: coordinating conjunction
+    ccomp: clausal complement
+    clf: classifier
+    compound: compound
+    conj: conjunct
+    cop: copula
+    csubj: clausal subject
+    dep: unspecified dependency
+    det: determiner
+    discourse: discourse element
+    dislocated: dislocated elements
+    expl: expletive
+    fixed: fixed multiword expression
+    flat: flat multiword expression
+    goeswith: goes with
+    iobj: indirect object
+    list: list
+    mark: marker
+    nmod: nominal modifier
+    nsubj: nominal subject
+    nummod: numeric modifier
+    obj: object
+    obl: oblique nominal
+    orphan: orphan
+    parataxis: parataxis
+    punct: punctuation
+    reparandum: overridden disfluency
+    root: root
+    vocative: vocative
+    xcomp: open clausal complement
+    """
+    TAGS = ['acl', 'advcl', 'advmod', 'amod', 'appos', 'aux', 'case',
+            'cc', 'ccomp', 'clf', 'compound', 'conj', 'cop', 'csubj',
+            'dep', 'det', 'discourse', 'dislocated', 'expl', 'fixed', 'flat',
+            'goeswith', 'iobj', 'list', 'mark', 'nmod', 'nsubj', 'nummod',
+            'obj', 'obl', 'orphan', 'parataxis', 'punct', 'reparandum', 'root',
+            'vocative', 'xcomp']
+
+    def __init__(self):
+        super(UDepVocab, self).__init__()
+        self.tags = self.TAGS
+        self.index = dict([(key, index) for index, key in enumerate(self.tags)])
+
+    def __repr__(self):
+        return ('UDepVocab object\nnum tags: %d' % (len(self), self.use_unk))
 
     def __len__(self):
         return len(self.index)
