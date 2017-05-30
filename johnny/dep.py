@@ -44,6 +44,10 @@ class Sentence(object):
         return json.dumps(dict(arcs=arcs, words=words))
 
     @property
+    def words(self):
+        return [t.form for t in self.tokens]
+
+    @property
     def heads(self):
         return [t.head for t in self.tokens]
 
