@@ -178,12 +178,12 @@ class Dense(chainer.Chain):
         # for each word, we consider all possible heads
         # we can pre-calculate U * a_j , for all a_j
         u_as = self.U(F.reshape(comb_states, (-1, self.lstm_units * 2)))
-        u_as = F.reshape(F.swapaxes(u_as, 0, 1), (-1, batch_size, self.lstm_units * 2))
+        u_as = F.swapaxes(F.reshape(u_as, (batch_size, -1, self.lstm_units * 2)), 0, 1)
         # we can also pre-calculate W * a_i , for all a_i
         # bs * max_sent x units * 2
         w_as = self.W(F.reshape(comb_states, (-1, self.lstm_units * 2)))
         # max_sent x bs x units * 2
-        w_as = F.reshape(F.swapaxes(w_as, 0, 1), (-1, batch_size, self.lstm_units * 2))
+        w_as = F.swapaxes(F.reshape(w_as, (batch_size, -1, self.lstm_units * 2)), 0, 1)
 
         # the probability of each word being the head of sent[i]
         sent_attn, preds_wrong_order = [], []
