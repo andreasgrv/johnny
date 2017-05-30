@@ -188,12 +188,15 @@ class Dense(chainer.Chain):
         # the probability of each word being the head of sent[i]
         sent_attn, preds_wrong_order = [], []
         self.loss = 0
-        for i in range(max_sent_len):
+        # we start from 1 because we don't consider root
+        for i in range(1, max_sent_len):
             num_active = col_lengths[i]
             # if we are training - create label variable
             if train:
-                gold_heads = Variable(np.array([sent[i] for sent in sorted_targets
-                                                if i < len(sent)],
+                # i-1 because sentence has root appended to beginning
+                i_h = i-1
+                gold_heads = Variable(np.array([sent[i_h] for sent in sorted_targets
+                                                if i_h < len(sent)],
                                                dtype=np.int32),
                                       volatile=False)
             # We broadcast w_as[i] to the size of u_as since we want to add
@@ -213,7 +216,9 @@ class Dense(chainer.Chain):
             # can't append to predictions after padding
             # because we get elements we shouldn't
             preds_wrong_order.append(np.argmax(attn.data, 1))
-            if not train or self.visualise:
+            # we only bother actually getting the softmax values
+            # if we are to visualise the results
+            if self.visualise:
                 # replace logits with prob from softmax
                 attn = F.softmax(attn)
                 attn = F.pad(attn, [(0, batch_size - num_active), (0, 0)],
@@ -233,8 +238,7 @@ class Dense(chainer.Chain):
                  if i < len(pred)]
                  for i in inv_perm_indices] 
         return preds
-        # TODO MASK
-        # TODO Permute results
+        # TODO Think of ways of avoiding self prediction
 
     def reset_state(self):
         # reset the state of LSTM layers

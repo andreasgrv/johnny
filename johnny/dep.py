@@ -7,6 +7,8 @@ from collections import Counter
 
 # TODO : compare what we get from this loader with what we get from CONLL script
 
+ROOT_REPR = '__ROOT__'
+
 
 def py2repr(f):
     def func(*args, **kwargs):
@@ -17,8 +19,14 @@ def py2repr(f):
             return x
     return func
     
+# TODO: Create Dataset class - that allows stats viewing.
+# the Dataset class should be a list of sentences enhanced with
+# properties such as words, heads, pos etc. 
+# the loader should return a Dataset object instead of
+# a list of sentences
 
 class Sentence(object):
+
 
     def __init__(self, tokens=None):
         # we are using this for dependency parsing
@@ -45,7 +53,9 @@ class Sentence(object):
 
     @property
     def words(self):
-        return [t.form for t in self.tokens]
+        words = [ROOT_REPR]
+        words.extend([t.form for t in self.tokens])
+        return words
 
     @property
     def heads(self):
@@ -57,11 +67,15 @@ class Sentence(object):
 
     @property
     def upostags(self):
-        return [t.upostag for t in self.tokens]
+        tags = [ROOT_REPR]
+        tags.extend([t.upostag for t in self.tokens])
+        return tags
 
     @property
     def xpostags(self):
-        return [t.xpostag for t in self.tokens]
+        tags = [ROOT_REPR]
+        tags.extend([t.xpostag for t in self.tokens])
+        return tags
 
 class Token(object):
 
@@ -145,26 +159,32 @@ class UDepLoader(object):
                     tokens.append(Token(*line.split('\t')))
         return sents
 
-    def load_train(self, lang):
+    def load_train(self, lang, verbose=False):
         p = os.path.join(self.datafolder, self.lang_folders[lang])
         train_filename = [fn for fn in os.listdir(p) 
                         if fn.endswith(self.TRAIN_SUFFIX)]
         if train_filename:
             train_filename = train_filename[0]
             train_path = os.path.join(p, train_filename)
-            return self.load_conllu(train_path)
+            sents = self.load_conllu(train_path) 
+            if verbose:
+                print('Loaded %d sentences from %s' % (len(sents), train_path))
+            return sents
         else:
             raise ValueError("Couldn't find a %s file for %s"
                              % (lang, self.TRAIN_SUFFIX))
 
-    def load_dev(self, lang):
+    def load_dev(self, lang, verbose=False):
         p = os.path.join(self.datafolder, self.lang_folders[lang])
         dev_filename = [fn for fn in os.listdir(p) 
                         if fn.endswith(self.DEV_SUFFIX)]
         if dev_filename:
             dev_filename = dev_filename[0]
             dev_path = os.path.join(p, dev_filename)
-            return self.load_conllu(dev_path)
+            sents = self.load_conllu(dev_path) 
+            if verbose:
+                print('Loaded %d sentences from %s' % (len(sents), dev_path))
+            return sents
         else:
             raise ValueError("Couldn't find a %s file for %s"
                              % (lang, self.DEV_SUFFIX))
@@ -278,7 +298,7 @@ class UPOSVocab(object):
 
     def __init__(self):
         super(UPOSVocab, self).__init__()
-        self.tags = self.TAGS
+        self.tags = self.TAGS + [ROOT_REPR]
         self.index = dict([(key, index) for index, key in enumerate(self.tags)])
 
     def __repr__(self):
