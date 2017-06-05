@@ -18,7 +18,9 @@ class Dense(chainer.Chain):
                  pos_units=30,
                  word_units=100,
                  lstm_units=100,
-                 num_lstm_layers=2,
+                 num_lstm_layers=1,
+                 dropout_inp=0.1,
+                 dropout_rec=0.5,
                  visualise = False
                  ):
 
@@ -29,6 +31,8 @@ class Dense(chainer.Chain):
         self.word_units = word_units
         self.lstm_units = lstm_units
         self.visualise = visualise
+        self.dropout_inp = dropout_inp
+        self.dropout_rec = dropout_rec
 
         self.add_link('embed_word', L.EmbedID(self.vocab_size, self.word_units))
         self.add_link('embed_pos', L.EmbedID(self.pos_size, self.pos_units))
@@ -49,7 +53,7 @@ class Dense(chainer.Chain):
         self.add_link('U', L.Linear(2*lstm_units, 2*lstm_units))
         self.add_link('W', L.Linear(2*lstm_units, 2*lstm_units))
 
-    def _feed_lstms(self, lstm_layers, sents, tags, train):
+    def _feed_lstms(self, lstm_layers, sents, tags):
         """pass batches of data through the lstm layers
         and store the activations"""
         assert(len(sents) == len(tags))
@@ -62,17 +66,19 @@ class Dense(chainer.Chain):
         setattr(self, state_name, [])
         for i in range(max_sent_len):
             words = Variable(np.array([sent[i] for sent in sents if i < len(sent)],
-                                      dtype=np.int32),
-                             volatile=not train)
+                                      dtype=np.int32))
             pos = Variable(np.array([sent[i] for sent in tags if i < len(sent)],
-                                    dtype=np.int32),
-                           volatile=not train)
+                                    dtype=np.int32))
             word_emb = self.embed_word(words)
             pos_emb = self.embed_pos(pos)
             act = F.concat((word_emb, pos_emb), axis=1)
+            if self.dropout_inp > 0:
+                act = F.dropout(act, ratio=self.dropout_inp)
 
             for layer in lstm_layers:
                 act = self[layer](act)
+                if self.dropout_rec > 0:
+                    act = F.dropout(act, ratio=self.dropout_rec)
             top_h = self[lstm_layers[-1]].h
             # we reshape to allow easy concatenation of activations
             self[state_name].append(F.reshape(top_h, (batch_size, 1, self.lstm_units)))
@@ -125,8 +131,8 @@ class Dense(chainer.Chain):
         # feed lists of words into forward and backward lstms
         # each list is a column of words if we imagine the sentence of each batch
         # concatenated vertically
-        self._feed_lstms(self.f_lstm, f_sents, f_tags, train)
-        self._feed_lstms(self.b_lstm, b_sents, b_tags, train)
+        self._feed_lstms(self.f_lstm, f_sents, f_tags)
+        self._feed_lstms(self.b_lstm, b_sents, b_tags)
         joint_f_states = F.concat(self.f_lstm_states, axis=1)
         # need to shift activations because of sentence length difference
         # ------------------------- EXPLANATION -------------------------
@@ -151,7 +157,7 @@ class Dense(chainer.Chain):
         # mask needed because sentences aren't all the same length
         mask = self.xp.ones((batch_size, max_sent_len), dtype=np.bool)
         minf = Variable(self.xp.full((batch_size, max_sent_len), self.MIN_PAD,
-                                           dtype=self.xp.float32), volatile=(not train))
+                                           dtype=self.xp.float32))
         corrected_align = []
         for i, l in enumerate(sent_lengths):
             # set what to throw away
@@ -197,8 +203,7 @@ class Dense(chainer.Chain):
                 i_h = i-1
                 gold_heads = Variable(np.array([sent[i_h] for sent in sorted_targets
                                                 if i_h < len(sent)],
-                                               dtype=np.int32),
-                                      volatile=False)
+                                               dtype=np.int32))
             # We broadcast w_as[i] to the size of u_as since we want to add
             # the activation of a_i to all different activations a_j
             a_u, a_v = F.broadcast(u_as, w_as[i])

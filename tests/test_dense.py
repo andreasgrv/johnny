@@ -1,7 +1,10 @@
 import pytest
+import chainer
 import numpy as np
 from johnny.models import Dense
 from chainer import optimizers, optimizer
+
+np.random.seed(13)
 
 def test_pred_dimensionality_basic():
     # root is 9
@@ -45,7 +48,6 @@ def test_can_predict_correct():
     oh_pos = [[9, 5,6], [9, 5,6,7,8], [9, 1]]
 
     opt = optimizers.Adam(alpha=0.1)
-    np.random.seed(13)
 
     model = Dense(10, 10, pos_units=1, word_units=1, lstm_units=8)
     opt.setup(model)
@@ -66,13 +68,12 @@ def test_can_predict_correct():
     assert(r == oh_heads)
 
 def test_batching_same_size():
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8)
+    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8, dropout_inp=0, dropout_rec=0)
 
     oh_words = [[9,1,2], [9,2,1], [9,3,2]]
     oh_pos = [[9,5,6], [9,1,3], [9,2,2]]
     oh_heads = [[1,0],[0,1], [1,0]]
 
-    model.reset_state()
     r = model(oh_words, oh_pos, oh_heads)
     batch_attn = model.attn.data[:]
     oh_words = [[9,1,2]]
@@ -84,13 +85,12 @@ def test_batching_same_size():
     assert(np.allclose(batch_attn[0], single_attn))
 
 def test_batching_diff_size():
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8)
+    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8, dropout_inp=0, dropout_rec=0)
 
     oh_words = [[9,1,2], [9,1,2,3,4], [9,3]]
     oh_pos = [[9,5,6], [9,5,6,7,8], [9,1]]
     oh_heads = [[1,0], [2,1,1,3],[0]]
 
-    model.reset_state()
     r = model(oh_words, oh_pos, oh_heads)
     batch_attn = model.attn.data[:]
     oh_words = [[9,1,2]]
