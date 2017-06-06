@@ -3,7 +3,9 @@ import six
 import codecs
 import json
 import re
+import numpy as np
 from collections import Counter
+from itertools import chain
 
 # TODO : compare what we get from this loader with what we get from CONLL script
 
@@ -25,6 +27,86 @@ def py2repr(f):
 # the loader should return a Dataset object instead of
 # a list of sentences
 
+class Dataset(object):
+
+    def __init__(self, sents, lang=None):
+        self.sents = sents
+        self.lang = lang
+
+    def __getitem__(self, index):
+        return self.sents[index]
+
+    def __len__(self):
+        return len(self.sents)
+
+    @py2repr
+    def __repr__(self):
+        return 'Dataset of %s - %s sents' % (self.lang, len(self.sents))
+
+    def __iter__(self):
+        for s in self.sents:
+            yield s
+
+    @property
+    def words(self):
+        return [s.words for s in self.sents]
+
+    @property
+    def heads(self):
+        return [s.heads for s in self.sents]
+
+    @property
+    def arctags(self):
+        return [s.arctags for s in self.sents]
+
+    @property
+    def upostags(self):
+        return [s.upostags for s in self.sents]
+
+    @property
+    def xpostags(self):
+        return [s.xpostags for s in self.sents]
+
+    @property
+    def sent_lengths(self):
+        return [len(sent) for sent in self.sents]
+
+    @property
+    def arc_lengths(self):
+        return list(chain(*[sent.arc_lengths for sent in self.sents]))
+
+    @property
+    def len_stats(self):
+        sent_lens = self.sent_lengths
+        self.max_sent_len = max(sent_lens)
+        self.min_sent_len = min(sent_lens)
+        self.avg_sent_len = np.mean(sent_lens)
+        self.std_sent_len = np.std(sent_lens)
+        return {'max_sent_len': self.max_sent_len,
+                'min_sent_len': self.min_sent_len,
+                'avg_sent_len': self.avg_sent_len,
+                'std_sent_len': self.std_sent_len}
+
+    @property
+    def arc_len_stats(self):
+        arc_lengths = self.arc_lengths 
+        self.max_arc_len = max(arc_lengths)
+        self.min_arc_len = min(arc_lengths)
+        self.avg_arc_len = np.mean(arc_lengths)
+        self.std_arc_len = np.std(arc_lengths)
+        return {'max_arc_len': self.max_arc_len,
+                'min_arc_len': self.min_arc_len,
+                'avg_arc_len': self.avg_arc_len,
+                'std_arc_len': self.std_arc_len}
+
+    @property
+    def stats(self):
+        stats = dict(**self.len_stats)
+        stats.update(**self.arc_len_stats)
+        stats['num_sents'] = len(self)
+        return stats
+
+
 class Sentence(object):
 
 
@@ -36,6 +118,10 @@ class Sentence(object):
 
     def __getitem__(self, index):
         return self.tokens[index]
+
+    def __iter__(self):
+        for t in self.tokens:
+            yield t
 
     @py2repr
     def __repr__(self):
@@ -76,6 +162,12 @@ class Sentence(object):
         tags = [ROOT_REPR]
         tags.extend([t.xpostag for t in self.tokens])
         return tags
+
+    @property
+    def arc_lengths(self):
+        """Compute how long the arcs are in words"""
+        return [abs(head - index) if head != 0 else 1 for index, head in enumerate(self.heads, 1)]
+
 
 class Token(object):
 
@@ -157,7 +249,7 @@ class UDepLoader(object):
                     tokens = []
                 if line and not line.startswith(CONLLU_COMMENT):
                     tokens.append(Token(*line.split('\t')))
-        return sents
+        return Dataset(sents)
 
     def load_train(self, lang, verbose=False):
         p = os.path.join(self.datafolder, self.lang_folders[lang])
@@ -169,7 +261,7 @@ class UDepLoader(object):
             sents = self.load_conllu(train_path) 
             if verbose:
                 print('Loaded %d sentences from %s' % (len(sents), train_path))
-            return sents
+            return Dataset(sents)
         else:
             raise ValueError("Couldn't find a %s file for %s"
                              % (lang, self.TRAIN_SUFFIX))
