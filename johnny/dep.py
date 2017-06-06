@@ -242,8 +242,14 @@ class Vocab(object):
         return self.index[key]
 
     def _build_index(self):
+        # we sort because in python 3 most_common is not guaranteed
+        # to return the same order for elements with same count
+        # when the code runs again. #fun_debugging
+        candidates = sorted(self.counts.most_common(),
+                            key=lambda x: (x[1], x[0]), reverse=True)
+        limit = self.size - 1 if self.size > 0 else 0
         # we leave the 0 index to represent the UNK
-        keep = self.counts.most_common(self.size - 1)
+        keep = candidates[:limit]
         if keep:
             keys, _ = zip(*keep)
             self.index = dict(zip(keys, range(1, len(keys)+1)))
