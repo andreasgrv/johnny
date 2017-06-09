@@ -4,7 +4,7 @@ import numpy as np
 import chainer.functions as F
 import chainer.links as L
 import chainer
-from chainer import Variable
+from chainer import Variable, cuda
 
 
 class Dense(chainer.Chain):
@@ -21,6 +21,7 @@ class Dense(chainer.Chain):
                  num_lstm_layers=1,
                  dropout_inp=0.1,
                  dropout_rec=0.5,
+                 gpu_id = -1,
                  visualise = False
                  ):
 
@@ -30,9 +31,10 @@ class Dense(chainer.Chain):
         self.pos_units = pos_units
         self.word_units = word_units
         self.lstm_units = lstm_units
-        self.visualise = visualise
         self.dropout_inp = dropout_inp
         self.dropout_rec = dropout_rec
+        self.gpu_id = gpu_id
+        self.visualise = visualise
 
         self.add_link('embed_word', L.EmbedID(self.vocab_size, self.word_units))
         self.add_link('embed_pos', L.EmbedID(self.pos_size, self.pos_units))
@@ -53,22 +55,43 @@ class Dense(chainer.Chain):
         self.add_link('U', L.Linear(2*lstm_units, 2*lstm_units))
         self.add_link('W', L.Linear(2*lstm_units, 2*lstm_units))
 
-    def _feed_lstms(self, lstm_layers, sents, tags):
+    # def _create_batch(self, seq):
+    #     max_seq_len = len(seq[0])
+    #     seq = np.vstack([np.pad(np.array([sent[i] for sent in sents if i < len(sent)], dtype=np.int32)
+    #                    for i in range(max_sent_len)])
+    def _create_lstm_batch(self, seq):
+        max_seq_len = len(seq[0])
+        batch = self.xp.array([[sent[i] if i < len(sent)
+                                else self.CHAINER_IGNORE_LABEL
+                                for sent in seq]
+                               for i in range(max_seq_len)],
+                              dtype=np.int32)
+        # TODO - only if gpu mode
+        if self.gpu_id >= 0:
+            cuda.to_gpu(batch, self.gpu_id)
+        return batch
+
+
+
+
+    def _feed_lstms(self, lstm_layers, sents, tags, boundaries):
         """pass batches of data through the lstm layers
         and store the activations"""
-        assert(len(sents) == len(tags))
-        batch_size = len(sents)
         # words and tags should have same length
-        max_sent_len = len(sents[0])
+        assert(len(sents) == len(tags))
+        max_sent_len = len(sents)
+        batch_size = len(sents[0])
         f_or_b = lstm_layers[-1][:1]
         state_name = '%s_lstm_states' % f_or_b
         # set f_lstm_states or b_lstm_states
         setattr(self, state_name, [])
         for i in range(max_sent_len):
-            words = Variable(np.array([sent[i] for sent in sents if i < len(sent)],
-                                      dtype=np.int32))
-            pos = Variable(np.array([sent[i] for sent in tags if i < len(sent)],
-                                    dtype=np.int32))
+            # only get embedding up to padding
+            # needed to pad because otherwise can't move whole batch to gpu
+            inactive_index = batch_size - boundaries[i]
+
+            words = Variable(sents[i][:inactive_index])
+            pos = Variable(tags[i][:inactive_index])
             word_emb = self.embed_word(words)
             pos_emb = self.embed_pos(pos)
             act = F.concat((word_emb, pos_emb), axis=1)
@@ -128,11 +151,24 @@ class Dense(chainer.Chain):
         batch_size = len(f_sents)
         max_sent_len = len(f_sents[0])
 
+        # mask batches for use in lstm
+        f_sents = self._create_lstm_batch(f_sents)
+        b_sents = self._create_lstm_batch(b_sents)
+        f_tags = self._create_lstm_batch(f_tags)
+        b_tags = self._create_lstm_batch(b_tags)
+
+        if train:
+            heads = self._create_lstm_batch(sorted_targets)
+
+        # mask needed because sentences aren't all the same length
+        mask = (f_sents != self.CHAINER_IGNORE_LABEL).T
+        col_lengths = np.sum(mask, axis=0)
         # feed lists of words into forward and backward lstms
         # each list is a column of words if we imagine the sentence of each batch
         # concatenated vertically
-        self._feed_lstms(self.f_lstm, f_sents, f_tags)
-        self._feed_lstms(self.b_lstm, b_sents, b_tags)
+        boundaries = np.sum((f_sents == self.CHAINER_IGNORE_LABEL), axis=1)
+        self._feed_lstms(self.f_lstm, f_sents, f_tags, boundaries)
+        self._feed_lstms(self.b_lstm, b_sents, b_tags, boundaries)
         joint_f_states = F.concat(self.f_lstm_states, axis=1)
         # need to shift activations because of sentence length difference
         # ------------------------- EXPLANATION -------------------------
@@ -154,21 +190,17 @@ class Dense(chainer.Chain):
         #                 [6, -1, -1]                       [6, -1, -1]
         # ---------------------------------------------------------------
         joint_b_states = F.concat(self.b_lstm_states, axis=1)
-        # mask needed because sentences aren't all the same length
-        mask = self.xp.ones((batch_size, max_sent_len), dtype=np.bool)
         minf = Variable(self.xp.full((batch_size, max_sent_len), self.MIN_PAD,
                                            dtype=self.xp.float32))
         corrected_align = []
         for i, l in enumerate(sent_lengths):
             # set what to throw away
-            mask[i, l:] = 0
             perm = np.hstack([   # reverse beginning of list
                               np.arange(l-1, -1, -1, dtype=np.int32),
                                  # leave rest of elements the same
                               np.arange(l, max_sent_len, dtype=np.int32)])
             correct = F.permutate(joint_b_states[i], perm, axis=0)
             corrected_align.append(F.reshape(correct, (1, max_sent_len, -1)))
-        col_lengths = np.sum(mask, axis=0)
         # concatenate the batches again
         joint_b_states = F.concat(corrected_align, axis=0)
 
@@ -201,9 +233,10 @@ class Dense(chainer.Chain):
             if train:
                 # i-1 because sentence has root appended to beginning
                 i_h = i-1
-                gold_heads = Variable(np.array([sent[i_h] for sent in sorted_targets
-                                                if i_h < len(sent)],
-                                               dtype=np.int32))
+                # gold_heads = Variable(cuda.to_gpu(self.xp.array([sent[i_h] for sent in sorted_targets
+                #                                 if i_h < len(sent)],
+                #                                dtype=np.int32)))
+                gold_heads = Variable(heads[i_h][:num_active])
             # We broadcast w_as[i] to the size of u_as since we want to add
             # the activation of a_i to all different activations a_j
             a_u, a_v = F.broadcast(u_as, w_as[i])
@@ -226,10 +259,10 @@ class Dense(chainer.Chain):
             if self.visualise:
                 # replace logits with prob from softmax
                 attn = F.softmax(attn)
-                attn = F.pad(attn, [(0, batch_size - num_active), (0, 0)],
+                attn = F.pad(attn, [(0, int(batch_size - num_active)), (0, 0)],
                              'constant', constant_values=np.exp(self.MIN_PAD))
             else:
-                attn = F.pad(attn, [(0, batch_size - num_active), (0, 0)],
+                attn = F.pad(attn, [(0, int(batch_size - num_active)), (0, 0)],
                              'constant', constant_values=self.MIN_PAD)
             # permute back to correct batch order
             attn = F.permutate(attn, np.array(perm_indices, dtype=np.int32))
