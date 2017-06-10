@@ -21,7 +21,10 @@ class Dense(chainer.Chain):
                  num_lstm_layers=1,
                  dropout_inp=0.1,
                  dropout_rec=0.5,
-                 gpu_id = -1,
+                 mlp_arc_units=100,
+                 mlp_lbl_units=100,
+                 gpu_id=-1,
+                 num_labels=46,
                  visualise = False
                  ):
 
@@ -33,6 +36,9 @@ class Dense(chainer.Chain):
         self.lstm_units = lstm_units
         self.dropout_inp = dropout_inp
         self.dropout_rec = dropout_rec
+        self.mlp_arc_units = mlp_arc_units
+        self.mlp_lbl_units = mlp_lbl_units
+        self.num_labels = num_labels
         self.gpu_id = gpu_id
         self.visualise = visualise
 
@@ -51,9 +57,13 @@ class Dense(chainer.Chain):
             self.add_link(f_name, L.LSTM(in_size, lstm_units))
             self.add_link(b_name, L.LSTM(in_size, lstm_units))
 
-        self.add_link('vT', L.Linear(2*lstm_units, 1))
-        self.add_link('U', L.Linear(2*lstm_units, 2*lstm_units))
-        self.add_link('W', L.Linear(2*lstm_units, 2*lstm_units))
+        self.add_link('vT', L.Linear(mlp_arc_units, 1))
+        self.add_link('U_arc', L.Linear(2*lstm_units, mlp_arc_units))
+        self.add_link('W_arc', L.Linear(2*lstm_units, mlp_arc_units))
+
+        self.add_link('V_lblT', L.Linear(mlp_lbl_units, self.num_labels))
+        self.add_link('U_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
+        self.add_link('W_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
 
     # def _create_batch(self, seq):
     #     max_seq_len = len(seq[0])
@@ -88,10 +98,10 @@ class Dense(chainer.Chain):
         for i in range(max_sent_len):
             # only get embedding up to padding
             # needed to pad because otherwise can't move whole batch to gpu
-            inactive_index = batch_size - boundaries[i]
+            active_until = boundaries[i]
 
-            words = Variable(sents[i][:inactive_index])
-            pos = Variable(tags[i][:inactive_index])
+            words = Variable(sents[i][:active_until])
+            pos = Variable(tags[i][:active_until])
             word_emb = self.embed_word(words)
             pos_emb = self.embed_pos(pos)
             act = F.concat((word_emb, pos_emb), axis=1)
@@ -106,7 +116,7 @@ class Dense(chainer.Chain):
             # we reshape to allow easy concatenation of activations
             self[state_name].append(F.reshape(top_h, (batch_size, 1, self.lstm_units)))
 
-    def __call__(self, s_words, s_pos, targets=None):
+    def __call__(self, s_words, s_pos, heads=None, labels=None):
         """ Expects a batch of sentences 
         so a list of K sentences where each sentence
         is a 2-tuple of indices of words, indices of pos tags.
@@ -121,7 +131,7 @@ class Dense(chainer.Chain):
         of same size can speed up training - prediction.
         """
         # if we pass targets, we are training!
-        train = (targets is not None)
+        train = (heads is not None)
         # in order to process batches of different sized sentences using LSTM in chainer
         # we need to sort by sentence length.
         # The longest sentences in tokens need to be at the beginning of the
@@ -130,11 +140,11 @@ class Dense(chainer.Chain):
         # We keep the permutation indices in order to reshuffle the output states,
         # since we want to map the activations to the inputs.
         if train:
-            perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos, targets)),
+            perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos, heads, labels)),
                                                      key=lambda x: len(x[1][0]),
                                                      reverse=True))
-            f_sents, f_tags, sorted_targets = zip(*sorted_batch)
-            # print('heads ', sorted_targets)
+            f_sents, f_tags, sorted_heads, sorted_labels = zip(*sorted_batch)
+            # print('heads ', sorted_heads)
         else:
             perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos)),
                                                      key=lambda x: len(x[1][0]),
@@ -158,7 +168,8 @@ class Dense(chainer.Chain):
         b_tags = self._create_lstm_batch(b_tags)
 
         if train:
-            heads = self._create_lstm_batch(sorted_targets)
+            heads = self._create_lstm_batch(sorted_heads)
+            labels = self._create_lstm_batch(sorted_labels)
 
         # mask needed because sentences aren't all the same length
         mask = (f_sents != self.CHAINER_IGNORE_LABEL).T
@@ -166,9 +177,9 @@ class Dense(chainer.Chain):
         # feed lists of words into forward and backward lstms
         # each list is a column of words if we imagine the sentence of each batch
         # concatenated vertically
-        boundaries = np.sum((f_sents == self.CHAINER_IGNORE_LABEL), axis=1)
-        self._feed_lstms(self.f_lstm, f_sents, f_tags, boundaries)
-        self._feed_lstms(self.b_lstm, b_sents, b_tags, boundaries)
+        # boundaries = np.sum((f_sents == self.CHAINER_IGNORE_LABEL), axis=1)
+        self._feed_lstms(self.f_lstm, f_sents, f_tags, col_lengths)
+        self._feed_lstms(self.b_lstm, b_sents, b_tags, col_lengths)
         joint_f_states = F.concat(self.f_lstm_states, axis=1)
         # need to shift activations because of sentence length difference
         # ------------------------- EXPLANATION -------------------------
@@ -215,16 +226,24 @@ class Dense(chainer.Chain):
         # In g(a_j, a_i) we note that we can precompute the matrix multiplications
         # for each word, we consider all possible heads
         # we can pre-calculate U * a_j , for all a_j
-        u_as = self.U(F.reshape(comb_states, (-1, self.lstm_units * 2)))
-        u_as = F.swapaxes(F.reshape(u_as, (batch_size, -1, self.lstm_units * 2)), 0, 1)
+        # reshape to 2D to calculate matrix multiplication
+        collapsed_comb_states = F.reshape(comb_states, (-1, self.lstm_units * 2))
+        u_arc = self.U_arc(collapsed_comb_states)
+        u_arc = F.swapaxes(F.reshape(u_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
         # we can also pre-calculate W * a_i , for all a_i
-        # bs * max_sent x units * 2
-        w_as = self.W(F.reshape(comb_states, (-1, self.lstm_units * 2)))
-        # max_sent x bs x units * 2
-        w_as = F.swapaxes(F.reshape(w_as, (batch_size, -1, self.lstm_units * 2)), 0, 1)
+        # bs * max_sent x mlp_arc_units
+        w_arc = self.W_arc(collapsed_comb_states)
+        # max_sent x bs x mlp_arc_units
+        w_arc = F.swapaxes(F.reshape(w_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
+
+        u_lbl = self.U_lbl(collapsed_comb_states)
+        u_lbl = F.swapaxes(F.reshape(u_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
+
+        w_lbl = self.W_lbl(collapsed_comb_states)
+        w_lbl = F.swapaxes(F.reshape(w_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
 
         # the probability of each word being the head of sent[i]
-        sent_attn, preds_wrong_order = [], []
+        sent_arcs, arc_preds_wrong_order, lbl_preds_wrong_order = [], [], []
         self.loss = 0
         # we start from 1 because we don't consider root
         for i in range(1, max_sent_len):
@@ -233,49 +252,74 @@ class Dense(chainer.Chain):
             if train:
                 # i-1 because sentence has root appended to beginning
                 i_h = i-1
-                # gold_heads = Variable(cuda.to_gpu(self.xp.array([sent[i_h] for sent in sorted_targets
+                # gold_heads = Variable(cuda.to_gpu(self.xp.array([sent[i_h] for sent in sorted_heads
                 #                                 if i_h < len(sent)],
                 #                                dtype=np.int32)))
                 gold_heads = Variable(heads[i_h][:num_active])
-            # We broadcast w_as[i] to the size of u_as since we want to add
+                gold_labels = Variable(labels[i_h][:num_active])
+            # We broadcast w_arc[i] to the size of u_as since we want to add
             # the activation of a_i to all different activations a_j
-            a_u, a_v = F.broadcast(u_as, w_as[i])
+            a_u, a_w = F.broadcast(u_arc, w_arc[i])
             # compute U * a_j + V * a_i for all j and this loops i
-            UWact = F.reshape(F.tanh(a_u + a_v), (-1, self.lstm_units * 2))
+            UWa = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
             # compute g(a_j, a_i)
-            g_a = self.vT(UWact)
-            attn = F.swapaxes(F.reshape(g_a, (-1, batch_size)), 0, 1)
-            attn = F.where(mask, attn, minf)[:num_active]
+            g_a = self.vT(UWa)
+            arcs = F.swapaxes(F.reshape(g_a, (-1, batch_size)), 0, 1)
+            arcs = F.where(mask, arcs, minf)[:num_active]
             if train:
-                loss = F.softmax_cross_entropy(attn, gold_heads,
+                loss = F.softmax_cross_entropy(arcs, gold_heads,
                                                ignore_label=self.CHAINER_IGNORE_LABEL)
                 self.loss += loss
                 # print(self.loss.data)
             # can't append to predictions after padding
             # because we get elements we shouldn't
-            preds_wrong_order.append(np.argmax(attn.data, 1))
+            # pred is the index of what we believe to be the head
+            # ----------------------------------------
+            # TODO: might need to be chainer function instead of np
+            # ----------------------------------------
+            arc_pred = np.argmax(arcs.data, 1)
+            arc_preds_wrong_order.append(arc_pred)
+
+            # print(arc_pred.shape)
+            # print(arc_pred)
+            l_heads = u_lbl[arc_pred, np.arange(len(arc_pred)), :]
+            l_w = w_lbl[i][:num_active]
+            # l_heads, l_w = F.broadcast(l_heads, w_lbl[i])
+            # print(l_heads.shape)
+            UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
+            lbls = self.V_lblT(UWl)
+            if train:
+                loss = F.softmax_cross_entropy(lbls, gold_labels,
+                                               ignore_label=self.CHAINER_IGNORE_LABEL)
+                self.loss += loss
+
+            lbl_pred = np.argmax(lbls.data, 1)
+            lbl_preds_wrong_order.append(lbl_pred)
             # we only bother actually getting the softmax values
             # if we are to visualise the results
             if self.visualise:
                 # replace logits with prob from softmax
-                attn = F.softmax(attn)
-                attn = F.pad(attn, [(0, int(batch_size - num_active)), (0, 0)],
+                arcs = F.softmax(arcs)
+                arcs = F.pad(arcs, [(0, int(batch_size - num_active)), (0, 0)],
                              'constant', constant_values=np.exp(self.MIN_PAD))
             else:
-                attn = F.pad(attn, [(0, int(batch_size - num_active)), (0, 0)],
+                arcs = F.pad(arcs, [(0, int(batch_size - num_active)), (0, 0)],
                              'constant', constant_values=self.MIN_PAD)
             # permute back to correct batch order
-            attn = F.permutate(attn, np.array(perm_indices, dtype=np.int32))
-            sent_attn.append(F.reshape(attn, (batch_size, -1, 1)))
-        self.attn = F.concat(sent_attn, axis=2)
-        # print(self.attn.shape)
-        # print(self.attn.data)
+            arcs = F.permutate(arcs, np.array(perm_indices, dtype=np.int32))
+            sent_arcs.append(F.reshape(arcs, (batch_size, -1, 1)))
+        self.arcs = F.concat(sent_arcs, axis=2)
+        # print(self.arcs.shape)
+        # print(self.arcs.data)
         # inverse permutation indices - to undo the permutation
         inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
-        preds = [[pred[i] for pred in preds_wrong_order
-                 if i < len(pred)]
-                 for i in inv_perm_indices] 
-        return preds
+        arc_preds = [[pred[i] for pred in arc_preds_wrong_order
+                      if i < len(pred)]
+                     for i in inv_perm_indices] 
+        lbl_preds = [[pred[i] for pred in lbl_preds_wrong_order
+                      if i < len(pred)]
+                     for i in inv_perm_indices] 
+        return arc_preds, lbl_preds
         # TODO Think of ways of avoiding self prediction
 
     def reset_state(self):
