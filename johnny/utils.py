@@ -123,4 +123,15 @@ shades = [' ', '░', '▒', '▓', '█']
 #     return ' '.join([shades[int(prob/0.2)]*len(word)
 #                      for word, prob in zip(words, probs)])
 def shade(probs):
-    return ''.join([shades[int(prob/0.2)] for prob in probs])
+    return ''.join([shades[int(prob/0.201)] for prob in probs])
+
+bars = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇']
+
+def bar(probs):
+    return ''.join([bars[int(prob/0.151)] for prob in probs])
+
+def discrete_print(string):
+    newlines = string.count('\n') + 1
+    filler = '\n' * newlines
+    cursor_move = '\033[%dA\033[100D' % newlines
+    return '%s%s\n%s%s' % (filler, cursor_move, string, cursor_move)

@@ -4,7 +4,10 @@ import numpy as np
 import chainer.functions as F
 import chainer.links as L
 import chainer
+from time import sleep
 from chainer import Variable, cuda
+from johnny.utils import bar, discrete_print
+from johnny.dep import UDepVocab
 
 
 class Dense(chainer.Chain):
@@ -41,6 +44,8 @@ class Dense(chainer.Chain):
         self.num_labels = num_labels
         self.gpu_id = gpu_id
         self.visualise = visualise
+        if visualise:
+            self.sleep_time = 0
 
         self.add_link('embed_word', L.EmbedID(self.vocab_size, self.word_units))
         self.add_link('embed_pos', L.EmbedID(self.pos_size, self.pos_units))
@@ -177,7 +182,6 @@ class Dense(chainer.Chain):
         # feed lists of words into forward and backward lstms
         # each list is a column of words if we imagine the sentence of each batch
         # concatenated vertically
-        # boundaries = np.sum((f_sents == self.CHAINER_IGNORE_LABEL), axis=1)
         self._feed_lstms(self.f_lstm, f_sents, f_tags, col_lengths)
         self._feed_lstms(self.b_lstm, b_sents, b_tags, col_lengths)
         joint_f_states = F.concat(self.f_lstm_states, axis=1)
@@ -302,6 +306,26 @@ class Dense(chainer.Chain):
                 arcs = F.softmax(arcs)
                 arcs = F.pad(arcs, [(0, int(batch_size - num_active)), (0, 0)],
                              'constant', constant_values=np.exp(self.MIN_PAD))
+                lbls = F.softmax(lbls)
+                one_hot_index = np.zeros(max_sent_len, dtype=np.float32)
+                one_hot_arc = np.zeros(max_sent_len, dtype=np.float32)
+                correct_head_index = int(gold_heads.data[0])
+                one_hot_arc[correct_head_index] = 1.
+                one_hot_index[i] = 1.
+                one_hot_lbl = np.zeros(self.num_labels, dtype=np.float32)
+                correct_lbl_index = int(gold_labels.data[0]) 
+                one_hot_lbl[correct_lbl_index] = 1.
+                print(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
+                                     'Real label: %-110s\nPred label: %-110s\n\n'
+                                     'Sleep time: %.2f - change with up and down arrow keys') % (
+                     '[%s] %d' % (bar(one_hot_index[:90]), i),
+                     '[%s] %d |%d|' % (bar(one_hot_arc[:90]), correct_head_index, abs(correct_head_index - i)),
+                        '[%s]' % bar(arcs.data[0].reshape(-1)[:90]),
+                        '[%s] %s' % (bar(one_hot_lbl), UDepVocab.TAGS[correct_lbl_index]),
+                        '[%s]' % bar(lbls.data[0].reshape(-1)),
+                        self.sleep_time),
+                      end='', flush=True)
+                sleep(self.sleep_time)
             else:
                 arcs = F.pad(arcs, [(0, int(batch_size - num_active)), (0, 0)],
                              'constant', constant_values=self.MIN_PAD)
