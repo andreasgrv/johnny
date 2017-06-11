@@ -37,14 +37,16 @@ class BucketManager(object):
         self.row_key = row_key or (lambda x: len(x))
         self.batch_count = 0
 
-        assert(bucket_width > 0)
-        assert(max_len > 0)
-        assert(min_len >= 0)
         self.max_len = max_len
         self.min_len = min_len
+        assert(self.bucket_width > 0)
+        assert(self.max_len > 0)
+        assert(self.min_len >= 0)
+        # +1 because we want to also be able to store sequences of max_len
+        # the range is [min_len, max_len]
         bucket_range = self.max_len - self.min_len + 1
-        exact_fit = bucket_range // bucket_width 
-        has_remainder = int(bucket_range % bucket_width > 0)
+        exact_fit = bucket_range // self.bucket_width 
+        has_remainder = int(bucket_range % self.bucket_width > 0)
         self.num_buckets = exact_fit + has_remainder
 
         self.buckets = [{self.DATA_KEY: [], self.END_INDEX_KEY: 0, self.INDEX_KEY: 0}
@@ -54,9 +56,8 @@ class BucketManager(object):
 
         for row in data:
             length = self.row_key(row)
-            adjust_length = length - self.min_len + 1
-            remainder = int((adjust_length % self.bucket_width) > 0)
-            which_bucket = (adjust_length // self.bucket_width) + remainder - 1
+            adjust_length = length - self.min_len
+            which_bucket = (adjust_length // self.bucket_width)
             if which_bucket < 0:
                 raise IndexError
             target = self.buckets[which_bucket]

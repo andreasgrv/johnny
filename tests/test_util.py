@@ -38,6 +38,15 @@ def test_wrong_max_len():
     with pytest.raises(IndexError):
         bm = BucketManager(data, 1, 2, batch_size=batch_size)
 
+def test_exact_max_len():
+    data = [[1,2,3],
+            [4,5,6],
+            [1,2,3]]
+
+    batch_size = 2 
+    bm = BucketManager(data, 2, 3, batch_size=batch_size)
+    assert(bm.buckets[1][bm.END_INDEX_KEY] == 3)
+
 def test_bucket_width():
     data = [[1,2,3],
             [4,5,6],
