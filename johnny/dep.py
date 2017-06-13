@@ -6,6 +6,7 @@ import re
 import numpy as np
 from collections import Counter
 from itertools import chain
+from johnny import DATA_ENV_VAR
 
 # TODO : compare what we get from this loader with what we get from CONLL script
 
@@ -211,7 +212,6 @@ class Token(object):
 class UDepLoader(object):
     """Loader for universal dependencies datasets"""
     LANG_FOLDER_REGEX = 'UD_(?P<lang>[A-Za-z\-\_]+)'
-    DATA_ENV_VAR = 'CONLL_DATA'
     PREFIX = 'UD_'
     TRAIN_SUFFIX = 'ud-train.conllu'
     DEV_SUFFIX = 'ud-dev.conllu'
@@ -219,7 +219,7 @@ class UDepLoader(object):
     def __init__(self, datafolder=None):
         super(UDepLoader, self).__init__()
         try:
-            self.datafolder = datafolder or os.environ[self.DATA_ENV_VAR]
+            self.datafolder = datafolder or os.environ[DATA_ENV_VAR]
         except KeyError:
             raise ValueError('You need to specify the path to the universal dependency '
                 'root folder either using the datafolder argument or by '
