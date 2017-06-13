@@ -1,7 +1,8 @@
+import six
 import numpy as np
 
 
-class BucketManager(object):
+class BucketManager(six.Iterator):
 
     DATA_KEY = 'data'
     INDEX_KEY = 'index'

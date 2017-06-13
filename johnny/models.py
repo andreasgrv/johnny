@@ -1,5 +1,6 @@
 # import dill
 # import tqdm
+import six
 import numpy as np
 import chainer.functions as F
 import chainer.links as L
@@ -149,15 +150,12 @@ class Dense(chainer.Chain):
                                                      key=lambda x: len(x[1][0]),
                                                      reverse=True))
             f_sents, f_tags, sorted_heads, sorted_labels = zip(*sorted_batch)
-            # print('heads ', sorted_heads)
         else:
             perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos)),
                                                      key=lambda x: len(x[1][0]),
                                                      reverse=True))
             f_sents, f_tags = zip(*sorted_batch)
         assert(len(f_sents) == len(s_words))
-        # print('f_sents ', f_sents)
-        # print('f_tags ', f_tags)
         # also create the sentence in reverse order for the bilstm
         b_sents, b_tags = [sent[::-1] for sent in f_sents], [tags[::-1] for tags in f_tags]
 
@@ -274,7 +272,6 @@ class Dense(chainer.Chain):
                 loss = F.softmax_cross_entropy(arcs, gold_heads,
                                                ignore_label=self.CHAINER_IGNORE_LABEL)
                 self.loss += loss
-                # print(self.loss.data)
             # can't append to predictions after padding
             # because we get elements we shouldn't
             # pred is the index of what we believe to be the head
@@ -284,12 +281,9 @@ class Dense(chainer.Chain):
             arc_pred = np.argmax(arcs.data, 1)
             arc_preds_wrong_order.append(arc_pred)
 
-            # print(arc_pred.shape)
-            # print(arc_pred)
             l_heads = u_lbl[arc_pred, np.arange(len(arc_pred)), :]
             l_w = w_lbl[i][:num_active]
             # l_heads, l_w = F.broadcast(l_heads, w_lbl[i])
-            # print(l_heads.shape)
             UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
             lbls = self.V_lblT(UWl)
             if train:
@@ -315,7 +309,7 @@ class Dense(chainer.Chain):
                 one_hot_lbl = np.zeros(self.num_labels, dtype=np.float32)
                 correct_lbl_index = int(gold_labels.data[0]) 
                 one_hot_lbl[correct_lbl_index] = 1.
-                print(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
+                six.print_(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
                                      'Real label: %-110s\nPred label: %-110s\n\n'
                                      'Sleep time: %.2f - change with up and down arrow keys') % (
                      '[%s] %d' % (bar(one_hot_index[:90]), i),
@@ -333,8 +327,6 @@ class Dense(chainer.Chain):
             arcs = F.permutate(arcs, np.array(perm_indices, dtype=np.int32))
             sent_arcs.append(F.reshape(arcs, (batch_size, -1, 1)))
         self.arcs = F.concat(sent_arcs, axis=2)
-        # print(self.arcs.shape)
-        # print(self.arcs.data)
         # inverse permutation indices - to undo the permutation
         inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
         arc_preds = [[pred[i] for pred in arc_preds_wrong_order
