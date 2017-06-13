@@ -1,6 +1,8 @@
+import os
 import numpy as np
 import pytest
-from johnny.utils import BucketManager
+from johnny.utils import BucketManager, Experiment
+from johnny import EXP_ENV_VAR
 
 def test_basic():
     data = [[1,2,3],
@@ -152,3 +154,33 @@ def test_row_key():
     assert(bm.buckets[0][bm.DATA_KEY] == [])
     assert(bm.buckets[1][bm.END_INDEX_KEY] == 5)
     assert(bm.buckets[2][bm.END_INDEX_KEY] == 0)
+
+def test_experiment_to_and_from_yaml(tmpdir):
+    p = str(tmpdir.mkdir('exps'))
+    e = Experiment('test', lang='English', exp_folder_path=p, model_params={'lr': 0.5, 'lstm_units': 100})
+    yml = e.to_yaml()
+    assert(yml == Experiment.from_yaml(e.to_yaml()).to_yaml())
+
+def test_experiment_load_save(tmpdir):
+    p = str(tmpdir.mkdir('exps'))
+    e = Experiment('test', lang='English', exp_folder_path=p, model_params={'lr': 0.5, 'lstm_units': 100})
+    e.save(exp_folder_path=p)
+    yml = e.to_yaml()
+    e2 = Experiment.load(e.filepath)
+    assert(yml == e2.to_yaml())
+
+def test_experiment_check_os_environ(tmpdir):
+    p = str(tmpdir.mkdir('exps'))
+    os.environ[EXP_ENV_VAR] = p
+    e = Experiment('test', lang='English', model_params={'lr': 0.5, 'lstm_units': 100})
+    e.save()
+    os.environ[EXP_ENV_VAR] = ''
+    with pytest.raises(ValueError):
+        e = Experiment('test', lang='English', model_params={'lr': 0.5, 'lstm_units': 100})
+        e.save()
+
+def test_experiment_non_existant_file(tmpdir):
+    os.environ[EXP_ENV_VAR] = 'gobbledygook'
+    with pytest.raises(ValueError):
+        e = Experiment('test', lang='English', model_params={'lr': 0.5, 'lstm_units': 100})
+        e.save()

@@ -1,5 +1,9 @@
+import os
 import six
 import numpy as np
+import yaml
+import datetime
+from johnny import EXP_ENV_VAR
 
 
 class BucketManager(six.Iterator):
@@ -37,6 +41,7 @@ class BucketManager(six.Iterator):
         # by default we use the length of the first entry in the row to sort by
         self.row_key = row_key or (lambda x: len(x))
         self.batch_count = 0
+        self.seq_count = 0
 
         self.max_len = max_len
         self.min_len = min_len
@@ -76,6 +81,7 @@ class BucketManager(six.Iterator):
         data = self.sample()
         if data:
             self.batch_count += 1
+            self.seq_count += len(data)
             return data
         else:
             raise StopIteration
@@ -96,14 +102,12 @@ class BucketManager(six.Iterator):
             # rewinds index of each bucket
             target[self.INDEX_KEY] = 0
             self.left_samples[buck_indx] = target[self.END_INDEX_KEY]
-        self.batch_count = 0
 
     def sample(self):
         more_to_go = self.total_left
         if more_to_go:
             probs = self.left_samples/more_to_go
             which_bucket = np.random.choice(self.num_buckets, 1, p=probs)[0]
-            #print('which_bucket',which_bucket)
             bucket = self.buckets[which_bucket]
             index = bucket[self.INDEX_KEY]
             left_over = bucket[self.END_INDEX_KEY] - index
@@ -111,6 +115,25 @@ class BucketManager(six.Iterator):
             data = bucket[self.DATA_KEY][index : index + num_samples]
             bucket[self.INDEX_KEY] += num_samples
             self.left_samples[which_bucket] -= num_samples
+            # if we are sampling from a nearly empty bucket
+            # and there are others with more to go, combine batches
+            # from different buckets
+            # more_to_go = self.total_left
+            # cur_size = len(data)
+            # while(cur_size < self.batch_size and more_to_go):
+            #     data = data[:]
+            #     probs = self.left_samples/more_to_go
+            #     which_bucket = np.random.choice(self.num_buckets, 1, p=probs)[0]
+            #     bucket = self.buckets[which_bucket]
+            #     index = bucket[self.INDEX_KEY]
+            #     left_over = bucket[self.END_INDEX_KEY] - index
+            #     num_samples = min((self.batch_size - cur_size, left_over))
+            #     more_data = bucket[self.DATA_KEY][index : index + num_samples]
+            #     bucket[self.INDEX_KEY] += num_samples
+            #     self.left_samples[which_bucket] -= num_samples
+            #     data.extend(more_data)
+            #     more_to_go = self.total_left
+            #     cur_size = len(data)
             return data
         return None
 
@@ -118,11 +141,81 @@ class BucketManager(six.Iterator):
     def total_left(self):
         return int(sum(self.left_samples))
 
+
+class Experiment(object):
+
+    MODEL_SUFFIX = '.model'
+    DATE_FORMAT = '%d-%m-%Y:%H:%M:%S'
+
+    def __init__(self, name, lang, **kwargs):
+        self.name = name
+        self.lang = lang
+        self.timeline = []
+        self.timestamp = datetime.datetime.strftime(datetime.datetime.now(),
+                                                    self.DATE_FORMAT)
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def __repr__(self):
+        return self.to_yaml()
+
+    def add_entry(self, **kwargs):
+        self.timeline.append(dict(**kwargs))
+        self.save()
+
+    def to_yaml(self):
+        return yaml.dump(self.__dict__, default_flow_style=False)
+
+    @classmethod
+    def from_yaml(cl, yaml_string):
+        return cl(**yaml.load(yaml_string))
+
+    @staticmethod
+    def _get_dir_path(exp_folder):
+        try:
+            directory = exp_folder or os.environ[EXP_ENV_VAR]
+        except KeyError:
+            raise AttributeError('Either set exp_folder_path attribute '
+            'to the folder the experiments should be saved to or set the '
+            '%s environment variable' % EXP_ENV_VAR)
+        if not os.path.isdir(directory):
+            raise ValueError('%s directory does not exist' % directory)
+        return directory
+
+    @staticmethod
+    def _create_exp_folder(dir_path):
+        try:
+            if not os.path.isdir(dir_path):
+                os.mkdir(dir_path)
+        except Exception:
+            raise ValueError('Could not create folder %s please check you '
+                             'have specified the correct folder to save the '
+                             'experiments in and that you have '
+                             'write access' % dir_path)
+
+    def save(self, exp_folder_path=None):
+        directory = self._get_dir_path(exp_folder_path)
+        dir_path = os.path.join(directory, self.lang)
+        self._create_exp_folder(dir_path)
+        filename = ('%s_%s' % (self.name, self.timestamp))
+        self.filepath = os.path.join(dir_path, filename)
+
+        with open(self.filepath, 'w') as f:
+            f.write(self.to_yaml())
+
+    @classmethod
+    def load(cl, filename):
+        with open(filename, 'r') as f:
+            yml = yaml.load(f.read())
+        return cl(**yml)
+
+    @property
+    def modelname(self):
+        return '%s%s' % (self.filepath, self.MODEL_SUFFIX)
+
+        
 shades = [' ', '░', '▒', '▓', '█']
 
-# def shade(words, probs):
-#     return ' '.join([shades[int(prob/0.2)]*len(word)
-#                      for word, prob in zip(words, probs)])
 def shade(probs):
     return ''.join([shades[int(prob/0.201)] for prob in probs])
 
