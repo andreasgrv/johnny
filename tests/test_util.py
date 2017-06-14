@@ -130,7 +130,6 @@ def test_reset():
     with pytest.raises(StopIteration):
         batch = next(bm)
 
-
 def test_row_key():
     data = [[[1,2,3],[1,2,3]],
             [[1,2],[1,2]],
@@ -154,6 +153,58 @@ def test_row_key():
     assert(bm.buckets[0][bm.DATA_KEY] == [])
     assert(bm.buckets[1][bm.END_INDEX_KEY] == 5)
     assert(bm.buckets[2][bm.END_INDEX_KEY] == 0)
+
+def test_right_leak_exact():
+    data = [[[1,2,3,4],[1,2,3,4]],
+            [[1,2],[1,2]]]
+
+    batch_size = 2 
+    bm = BucketManager(data, 1, 5, right_leak=2, batch_size=batch_size, shuffle=False, row_key=lambda x: len(x[0]))
+    # make it improbable that it will select bucket with index 4 instead of 1
+    bm.left_samples[1] = 1000
+    batch = next(bm)
+    assert(len(batch) == 2)
+    assert([[1,2],[1,2]] in batch)
+    assert([[1,2,3,4],[1,2,3,4]] in batch)
+
+def test_right_leak_minus_one():
+    data = [[[1,2,3,4],[1,2,3,4]],
+            [[1,2],[1,2]]]
+
+    batch_size = 2 
+    bm = BucketManager(data, 1, 5, right_leak=1, batch_size=batch_size, shuffle=False, row_key=lambda x: len(x[0]))
+    # make it improbable that it will select bucket with index 4 instead of 1
+    bm.left_samples[1] = 1000
+    batch = next(bm)
+    assert(len(batch) == 1)
+    assert([[1,2,3,4],[1,2,3,4]] not in batch)
+
+def test_right_leak_overzealous():
+    data = [[[1,2,3,4],[1,2,3,4]],
+            [[1,2,3], [1,2,3]],
+            [[1,2],[1,2]]]
+
+    batch_size = 2 
+    bm = BucketManager(data, 1, 5, right_leak=100, batch_size=batch_size, shuffle=False, row_key=lambda x: len(x[0]))
+    # make it improbable that it will select bucket with index 4 instead of 1
+    bm.left_samples[1] = 1000
+    batch = next(bm)
+    assert(len(batch) == 2)
+    assert([[1,2],[1,2]] in batch)
+    assert([[1,2,3],[1,2,3]] in batch)
+
+def test_right_leak_right_one():
+    data = [[[1,2,3,4],[1,2,3,4]],
+            [[1,2],[1,2]]]
+
+    batch_size = 2 
+    bm = BucketManager(data, 1, 5, right_leak=100, batch_size=batch_size, shuffle=False, row_key=lambda x: len(x[0]))
+    # make it improbable that it will select bucket with index 4 instead of 1
+    bm.left_samples[1] = 1000
+    batch = next(bm)
+    assert(len(batch) == 2)
+    assert([[1,2],[1,2]] in batch)
+    assert([[1,2,3,4],[1,2,3,4]] in batch)
 
 def test_experiment_to_and_from_yaml(tmpdir):
     p = str(tmpdir.mkdir('exps'))

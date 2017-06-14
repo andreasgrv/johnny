@@ -14,7 +14,7 @@ class BucketManager(six.Iterator):
 
 
     def __init__(self, data, bucket_width, max_len, min_len=1, batch_size=64,
-                 shuffle=True, row_key=None):
+                 shuffle=True, right_leak=None, row_key=None):
         """
         data: a list of rows
 
@@ -38,6 +38,7 @@ class BucketManager(six.Iterator):
         self.bucket_width = bucket_width
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.right_leak = right_leak
         # by default we use the length of the first entry in the row to sort by
         self.row_key = row_key or (lambda x: len(x))
         self.batch_count = 0
@@ -94,7 +95,7 @@ class BucketManager(six.Iterator):
 
     def reset(self, shuffle=None):
         """Resets status"""
-        shuffle = shuffle or self.shuffle
+        shuffle = self.shuffle if shuffle is None else shuffle
         if shuffle:
             self.shuffle_bucket_contents()
         for buck_indx in range(self.num_buckets):
@@ -115,25 +116,29 @@ class BucketManager(six.Iterator):
             data = bucket[self.DATA_KEY][index : index + num_samples]
             bucket[self.INDEX_KEY] += num_samples
             self.left_samples[which_bucket] -= num_samples
-            # if we are sampling from a nearly empty bucket
-            # and there are others with more to go, combine batches
-            # from different buckets
-            # more_to_go = self.total_left
-            # cur_size = len(data)
-            # while(cur_size < self.batch_size and more_to_go):
-            #     data = data[:]
-            #     probs = self.left_samples/more_to_go
-            #     which_bucket = np.random.choice(self.num_buckets, 1, p=probs)[0]
-            #     bucket = self.buckets[which_bucket]
-            #     index = bucket[self.INDEX_KEY]
-            #     left_over = bucket[self.END_INDEX_KEY] - index
-            #     num_samples = min((self.batch_size - cur_size, left_over))
-            #     more_data = bucket[self.DATA_KEY][index : index + num_samples]
-            #     bucket[self.INDEX_KEY] += num_samples
-            #     self.left_samples[which_bucket] -= num_samples
-            #     data.extend(more_data)
-            #     more_to_go = self.total_left
-            #     cur_size = len(data)
+
+            if self.right_leak:
+                # if we are sampling from a nearly empty bucket
+                # and there are others with more to go, combine batches
+                # from different buckets
+                leak_max_index = min(self.num_buckets - 1, which_bucket + self.right_leak)
+                leak_extension = self.left_samples[which_bucket: leak_max_index]
+                more_to_go = np.sum(leak_extension)
+                leak_index = which_bucket
+                cur_size = len(data)
+                while(cur_size < self.batch_size and leak_index <= leak_max_index and more_to_go):
+                    data = data[:]
+                    bucket = self.buckets[leak_index]
+                    index = bucket[self.INDEX_KEY]
+                    left_over = bucket[self.END_INDEX_KEY] - index
+                    num_samples = min((self.batch_size - cur_size, left_over))
+                    more_data = bucket[self.DATA_KEY][index : index + num_samples]
+                    bucket[self.INDEX_KEY] += num_samples
+                    self.left_samples[leak_index] -= num_samples
+                    data.extend(more_data)
+                    more_to_go = np.sum(leak_extension)
+                    cur_size = len(data)
+                    leak_index += 1
             return data
         return None
 
@@ -145,7 +150,7 @@ class BucketManager(six.Iterator):
 class Experiment(object):
 
     MODEL_SUFFIX = '.model'
-    DATE_FORMAT = '%d-%m-%Y:%H:%M:%S'
+    DATE_FORMAT = '%m-%d-%Y %H:%M:%S'
 
     def __init__(self, name, lang, **kwargs):
         self.name = name
@@ -161,7 +166,6 @@ class Experiment(object):
 
     def add_entry(self, **kwargs):
         self.timeline.append(dict(**kwargs))
-        self.save()
 
     def to_yaml(self):
         return yaml.dump(self.__dict__, default_flow_style=False)
@@ -197,7 +201,7 @@ class Experiment(object):
         directory = self._get_dir_path(exp_folder_path)
         dir_path = os.path.join(directory, self.lang)
         self._create_exp_folder(dir_path)
-        filename = ('%s_%s' % (self.name, self.timestamp))
+        filename = ('%s %s' % (self.name, self.timestamp))
         self.filepath = os.path.join(dir_path, filename)
 
         with open(self.filepath, 'w') as f:
