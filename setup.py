@@ -10,6 +10,6 @@ setup(
       license='BSD',
       keywords=['parsing', 'dependency', 'language'],
       classifiers=[],
-      install_requires=['chainer>=2.0.0', 'six', 'pyyaml'],
+      install_requires=['chainer>=2.0.0', 'six', 'pyyaml', 'numpy>=1.13.0'],
       tests_require=['pytest']
       )
