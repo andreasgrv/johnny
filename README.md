@@ -1,3 +1,8 @@
-DEPendency Parsing library
+# Johnny - DEPendency Parsing library
 
-TODO: fill this in
+Work in progress.
+
+### Status
+[![Build Status](https://api.travis-ci.org/andreasgrv/johnny.svg?branch=master)](https://travis-ci.org/andreasgrv/johnny)
+
+Python versions supported: python2.7, python3.4+

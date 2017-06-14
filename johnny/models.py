@@ -1,5 +1,3 @@
-# import dill
-# import tqdm
 import six
 import numpy as np
 import chainer.functions as F
@@ -45,8 +43,7 @@ class Dense(chainer.Chain):
         self.num_labels = num_labels
         self.gpu_id = gpu_id
         self.visualise = visualise
-        if visualise:
-            self.sleep_time = 0
+        self.sleep_time = 0
 
         self.add_link('embed_word', L.EmbedID(self.vocab_size, self.word_units))
         self.add_link('embed_pos', L.EmbedID(self.pos_size, self.pos_units))
@@ -71,10 +68,6 @@ class Dense(chainer.Chain):
         self.add_link('U_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
         self.add_link('W_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
 
-    # def _create_batch(self, seq):
-    #     max_seq_len = len(seq[0])
-    #     seq = np.vstack([np.pad(np.array([sent[i] for sent in sents if i < len(sent)], dtype=np.int32)
-    #                    for i in range(max_sent_len)])
     def _create_lstm_batch(self, seq):
         max_seq_len = len(seq[0])
         batch = self.xp.array([[sent[i] if i < len(sent)
@@ -86,9 +79,6 @@ class Dense(chainer.Chain):
         if self.gpu_id >= 0:
             cuda.to_gpu(batch, self.gpu_id)
         return batch
-
-
-
 
     def _feed_lstms(self, lstm_layers, sents, tags, boundaries):
         """pass batches of data through the lstm layers
@@ -254,9 +244,6 @@ class Dense(chainer.Chain):
             if train:
                 # i-1 because sentence has root appended to beginning
                 i_h = i-1
-                # gold_heads = Variable(cuda.to_gpu(self.xp.array([sent[i_h] for sent in sorted_heads
-                #                                 if i_h < len(sent)],
-                #                                dtype=np.int32)))
                 gold_heads = Variable(heads[i_h][:num_active])
                 gold_labels = Variable(labels[i_h][:num_active])
             # We broadcast w_arc[i] to the size of u_as since we want to add
