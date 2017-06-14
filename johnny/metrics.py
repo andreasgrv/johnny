@@ -34,7 +34,7 @@ class UAS(Average):
         pred_arcs, true_arcs = arcs
         preds = np.asarray(pred_arcs)
         truth = np.asarray(true_arcs)
-        correct = np.sum(preds == truth)
+        correct = float(np.sum(preds == truth))
         self.count += len(preds)
         self.cumsum += correct
         return self.cumsum / self.count
@@ -57,7 +57,7 @@ class LAS(Average):
         t_arcs = np.asarray(true_arcs)
         p_labels = np.asarray(pred_labels)
         t_labels = np.asarray(true_labels)
-        correct = np.sum((p_arcs == t_arcs) & (p_labels == t_labels))
+        correct = float(np.sum((p_arcs == t_arcs) & (p_labels == t_labels)))
         self.count += len(p_arcs)
         self.cumsum += correct
         return self.cumsum / self.count
