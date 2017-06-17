@@ -258,10 +258,10 @@ class UDepLoader(object):
         if train_filename:
             train_filename = train_filename[0]
             train_path = os.path.join(p, train_filename)
-            sents = self.load_conllu(train_path) 
+            dataset = self.load_conllu(train_path) 
             if verbose:
-                print('Loaded %d sentences from %s' % (len(sents), train_path))
-            return Dataset(sents)
+                print('Loaded %d sentences from %s' % (len(dataset), train_path))
+            return dataset
         else:
             raise ValueError("Couldn't find a %s file for %s"
                              % (lang, self.TRAIN_SUFFIX))
@@ -273,10 +273,10 @@ class UDepLoader(object):
         if dev_filename:
             dev_filename = dev_filename[0]
             dev_path = os.path.join(p, dev_filename)
-            sents = self.load_conllu(dev_path) 
+            dataset = self.load_conllu(dev_path) 
             if verbose:
-                print('Loaded %d sentences from %s' % (len(sents), dev_path))
-            return sents
+                print('Loaded %d sentences from %s' % (len(dataset), dev_path))
+            return dataset
         else:
             raise ValueError("Couldn't find a %s file for %s"
                              % (lang, self.DEV_SUFFIX))
