@@ -3,6 +3,7 @@ import six
 import codecs
 import json
 import re
+import pickle
 import numpy as np
 from collections import Counter
 from itertools import chain
@@ -361,6 +362,15 @@ class Vocab(object):
         returns list of indices.
         """
         return [self.index.get(token, self.UNK) for token in tokens]
+
+    def save(self, filepath):
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cl, filepath):
+        with open(filepath, 'rb') as f:
+            return pickle.load(f)
 
     @classmethod
     def from_token_list(cl, tokens, size, threshold=0):
