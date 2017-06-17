@@ -15,7 +15,7 @@ def test_pred_dimensionality_basic():
     oh_heads = [[1,0], [2,1,1,3],[0]]
     oh_labels = [[1,0], [2,1,1,3],[0]]
 
-    dm = Dense(10, 10, pos_units=1, word_units=1, lstm_units=1)
+    dm = Dense(vocab_size=10, pos_size=10, pos_units=1, word_units=1, lstm_units=1)
     r, l = dm(oh_words, oh_pos, oh_heads, oh_labels)
     assert(len(r[0]) == 2)
     assert(len(r[1]) == 4)
@@ -28,7 +28,7 @@ def test_pred_dimensionality_larger_hidden():
     oh_heads = [[1,0], [2,1,1,3],[0]]
     oh_labels = [[1,0], [2,1,1,3],[0]]
 
-    dm = Dense(10, 10, pos_units=1, word_units=1, lstm_units=4)
+    dm = Dense(vocab_size=10, pos_size=10, pos_units=1, word_units=1, lstm_units=4)
     r, l = dm(oh_words, oh_pos, oh_heads, oh_labels)
     print(r)
     assert(len(r[0]) == 2)
@@ -42,7 +42,7 @@ def test_pred_dimensionality_wrong_input():
     oh_heads = [[1,0], [2,1,1,3]]
     oh_labels = [[1,0], [2,1,1,3],[0]]
 
-    dm = Dense(10, 10, pos_units=1, word_units=1, lstm_units=1)
+    dm = Dense(vocab_size=10, pos_size=10, pos_units=1, word_units=1, lstm_units=1)
     with pytest.raises(AssertionError):
         r, l = dm(oh_words, oh_pos, oh_heads, oh_labels)
 
@@ -58,7 +58,7 @@ def test_can_predict_correct():
 
     opt = optimizers.Adam(alpha=0.1)
 
-    model = Dense(10, 10, pos_units=1, word_units=1, lstm_units=8)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=1, word_units=1, lstm_units=8)
     opt.setup(model)
     # gradient clipping
     opt.add_hook(optimizer.GradientClipping(threshold=5))
@@ -79,30 +79,33 @@ def test_can_predict_correct():
 
 def test_batching_same_size_dropout():
     np.random.seed(SEED)
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=10, word_units=10, lstm_units=8)
 
     oh_words = [[9,1,2], [9,2,1], [9,3,2]]
     oh_pos = [[9,5,6], [9,1,3], [9,2,2]]
 
-    r, l = model(oh_words, oh_pos)
+    with chainer.using_config('train', False):
+        r, l = model(oh_words, oh_pos)
     batch_arcs = model.arcs.data[:]
     oh_words = [[9,1,2], [9,5,2], [9,4,3]]
     oh_pos = [[9,5,6], [9,3,5], [9,3,4]]
     # reset for dropout - need same matrices
     np.random.seed(SEED)
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8)
-    r, l = model(oh_words, oh_pos)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=10, word_units=10, lstm_units=8)
+    with chainer.using_config('train', False):
+        r, l = model(oh_words, oh_pos)
     single_arcs = model.arcs.data
     assert(np.allclose(batch_arcs[0], single_arcs[0]))
 
 def test_batching_diff_size_dropout():
     np.random.seed(SEED)
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=10, word_units=10, lstm_units=8)
 
     oh_words = [[9,1,2], [9,1,2,3,4], [9,3]]
     oh_pos = [[9,5,6], [9,5,6,7,8], [9,1]]
 
-    r, l = model(oh_words, oh_pos)
+    with chainer.using_config('train', False):
+        r, l = model(oh_words, oh_pos)
     batch_arcs = model.arcs.data[:]
     # has to be same size because otherwise dropout 
     # random generator sequence causes
@@ -111,8 +114,9 @@ def test_batching_diff_size_dropout():
     oh_pos = [[9,5,6], [9,3,5,6,2], [9,3]]
     # reset for dropout - need same matrices
     np.random.seed(SEED)
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8)
-    r, l = model(oh_words, oh_pos)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=10, word_units=10, lstm_units=8)
+    with chainer.using_config('train', False):
+        r, l = model(oh_words, oh_pos)
     single_arcs = model.arcs.data[:]
     # NOTE: because the max length size is 4, the attention matrix is
     # squarish (not square cause of root) and padded
@@ -120,33 +124,37 @@ def test_batching_diff_size_dropout():
 
 def test_batching_same_size():
     np.random.seed(SEED)
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8, dropout_inp=0, dropout_rec=0)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=10, word_units=10, lstm_units=8, dropout_inp=0, dropout_rec=0)
 
     oh_words = [[9,1,2], [9,2,1], [9,3,2]]
     oh_pos = [[9,5,6], [9,1,3], [9,2,2]]
 
-    r, l = model(oh_words, oh_pos)
+    with chainer.using_config('train', False):
+        r, l = model(oh_words, oh_pos)
     batch_arcs = model.arcs.data[:]
     oh_words = [[9,1,2]]
     oh_pos = [[9,5,6]]
     model.reset_state()
-    r, l = model(oh_words, oh_pos)
+    with chainer.using_config('train', False):
+        r, l = model(oh_words, oh_pos)
     single_arcs = model.arcs.data
     assert(np.allclose(batch_arcs[0], single_arcs))
 
 def test_batching_diff_size():
     np.random.seed(SEED)
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8, dropout_inp=0, dropout_rec=0)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=10, word_units=10, lstm_units=8, dropout_inp=0, dropout_rec=0)
 
     oh_words = [[9,1,2], [9,1,2,3,4], [9,3]]
     oh_pos = [[9,5,6], [9,5,6,7,8], [9,1]]
 
-    r, l = model(oh_words, oh_pos)
+    with chainer.using_config('train', False):
+        r, l = model(oh_words, oh_pos)
     batch_arcs = model.arcs.data[:]
     oh_words = [[9,1,2]]
     oh_pos = [[9,5,6]]
     model.reset_state()
-    r, l = model(oh_words, oh_pos)
+    with chainer.using_config('train', False):
+        r, l = model(oh_words, oh_pos)
     single_arcs = model.arcs.data
     # NOTE: because the max length size is 4, the attention matrix is
     # squarish (not square cause of root) and padded
@@ -154,7 +162,7 @@ def test_batching_diff_size():
 
 def test_batched_preds_equal_non_batched_preds():
     np.random.seed(SEED)
-    model = Dense(10, 10, pos_units=10, word_units=10, lstm_units=8)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=10, word_units=10, lstm_units=8)
     oh_words = [[9,1,2], [9,1,2,3,4], [9,3]]
     oh_pos = [[9,5,6], [9,5,6,7,8], [9,1]]
 

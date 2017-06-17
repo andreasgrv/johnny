@@ -15,8 +15,8 @@ class Dense(chainer.Chain):
     MIN_PAD = -100.
 
     def __init__(self,
-                 vocab_size,
-                 pos_size,
+                 vocab_size=10000,
+                 pos_size=30,
                  pos_units=30,
                  word_units=100,
                  lstm_units=100,
@@ -68,7 +68,7 @@ class Dense(chainer.Chain):
         self.add_link('U_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
         self.add_link('W_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
 
-    def _create_lstm_batch(self, seq):
+    def _pad_batch(self, seq):
         max_seq_len = len(seq[0])
         batch = self.xp.array([[sent[i] if i < len(sent)
                                 else self.CHAINER_IGNORE_LABEL
@@ -85,13 +85,11 @@ class Dense(chainer.Chain):
         and store the activations"""
         # words and tags should have same length
         assert(len(sents) == len(tags))
-        max_sent_len = len(sents)
-        batch_size = len(sents[0])
         f_or_b = lstm_layers[-1][:1]
         state_name = '%s_lstm_states' % f_or_b
         # set f_lstm_states or b_lstm_states
         setattr(self, state_name, [])
-        for i in range(max_sent_len):
+        for i in range(self.max_sent_len):
             # only get embedding up to padding
             # needed to pad because otherwise can't move whole batch to gpu
             active_until = boundaries[i]
@@ -110,14 +108,14 @@ class Dense(chainer.Chain):
                     act = F.dropout(act, ratio=self.dropout_rec)
             top_h = self[lstm_layers[-1]].h
             # we reshape to allow easy concatenation of activations
-            self[state_name].append(F.reshape(top_h, (batch_size, 1, self.lstm_units)))
+            self[state_name].append(F.reshape(top_h, (self.batch_size, 1, self.lstm_units)))
 
     def __call__(self, s_words, s_pos, heads=None, labels=None):
         """ Expects a batch of sentences 
         so a list of K sentences where each sentence
         is a 2-tuple of indices of words, indices of pos tags.
         Example of 2 sentences:
-            [([1, 5, 2], [4, 7,1]), ([1,2], [3,4])]
+            [([1,5,2], [4,7,1]), ([1,2], [3,4])]
               w1 w2      p1 p2
               |------- s1 -------|
 
@@ -126,8 +124,7 @@ class Dense(chainer.Chain):
         This is as slow as the longest sentence - so bucketing sentences
         of same size can speed up training - prediction.
         """
-        # if we pass targets, we are training!
-        train = (heads is not None)
+        calc_loss = ((heads is not None) and (labels is not None))
         # in order to process batches of different sized sentences using LSTM in chainer
         # we need to sort by sentence length.
         # The longest sentences in tokens need to be at the beginning of the
@@ -135,7 +132,7 @@ class Dense(chainer.Chain):
         # to the smallest sentences that have 'run out of tokens'.
         # We keep the permutation indices in order to reshuffle the output states,
         # since we want to map the activations to the inputs.
-        if train:
+        if calc_loss:
             perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos, heads, labels)),
                                                      key=lambda x: len(x[1][0]),
                                                      reverse=True))
@@ -151,18 +148,18 @@ class Dense(chainer.Chain):
 
         sent_lengths = [len(sent) for sent in f_sents]
 
-        batch_size = len(f_sents)
-        max_sent_len = len(f_sents[0])
+        self.batch_size = len(f_sents)
+        self.max_sent_len = len(f_sents[0])
 
         # mask batches for use in lstm
-        f_sents = self._create_lstm_batch(f_sents)
-        b_sents = self._create_lstm_batch(b_sents)
-        f_tags = self._create_lstm_batch(f_tags)
-        b_tags = self._create_lstm_batch(b_tags)
+        f_sents = self._pad_batch(f_sents)
+        b_sents = self._pad_batch(b_sents)
+        f_tags = self._pad_batch(f_tags)
+        b_tags = self._pad_batch(b_tags)
 
-        if train:
-            heads = self._create_lstm_batch(sorted_heads)
-            labels = self._create_lstm_batch(sorted_labels)
+        if calc_loss:
+            heads = self._pad_batch(sorted_heads)
+            labels = self._pad_batch(sorted_labels)
 
         # mask needed because sentences aren't all the same length
         mask = (f_sents != self.CHAINER_IGNORE_LABEL).T
@@ -193,7 +190,7 @@ class Dense(chainer.Chain):
         #                 [6, -1, -1]                       [6, -1, -1]
         # ---------------------------------------------------------------
         joint_b_states = F.concat(self.b_lstm_states, axis=1)
-        minf = Variable(self.xp.full((batch_size, max_sent_len), self.MIN_PAD,
+        minf = Variable(self.xp.full((self.batch_size, self.max_sent_len), self.MIN_PAD,
                                            dtype=self.xp.float32))
         corrected_align = []
         for i, l in enumerate(sent_lengths):
@@ -201,9 +198,9 @@ class Dense(chainer.Chain):
             perm = np.hstack([   # reverse beginning of list
                               np.arange(l-1, -1, -1, dtype=np.int32),
                                  # leave rest of elements the same
-                              np.arange(l, max_sent_len, dtype=np.int32)])
+                              np.arange(l, self.max_sent_len, dtype=np.int32)])
             correct = F.permutate(joint_b_states[i], perm, axis=0)
-            corrected_align.append(F.reshape(correct, (1, max_sent_len, -1)))
+            corrected_align.append(F.reshape(correct, (1, self.max_sent_len, -1)))
         # concatenate the batches again
         joint_b_states = F.concat(corrected_align, axis=0)
 
@@ -221,31 +218,32 @@ class Dense(chainer.Chain):
         # reshape to 2D to calculate matrix multiplication
         collapsed_comb_states = F.reshape(comb_states, (-1, self.lstm_units * 2))
         u_arc = self.U_arc(collapsed_comb_states)
-        u_arc = F.swapaxes(F.reshape(u_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
+        u_arc = F.swapaxes(F.reshape(u_arc, (self.batch_size, -1, self.mlp_arc_units)), 0, 1)
         # we can also pre-calculate W * a_i , for all a_i
         # bs * max_sent x mlp_arc_units
         w_arc = self.W_arc(collapsed_comb_states)
         # max_sent x bs x mlp_arc_units
-        w_arc = F.swapaxes(F.reshape(w_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
+        w_arc = F.swapaxes(F.reshape(w_arc, (self.batch_size, -1, self.mlp_arc_units)), 0, 1)
 
         u_lbl = self.U_lbl(collapsed_comb_states)
-        u_lbl = F.swapaxes(F.reshape(u_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
+        u_lbl = F.swapaxes(F.reshape(u_lbl, (self.batch_size, -1, self.mlp_lbl_units)), 0, 1)
 
         w_lbl = self.W_lbl(collapsed_comb_states)
-        w_lbl = F.swapaxes(F.reshape(w_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
+        w_lbl = F.swapaxes(F.reshape(w_lbl, (self.batch_size, -1, self.mlp_lbl_units)), 0, 1)
 
         # the probability of each word being the head of sent[i]
         sent_arcs, arc_preds_wrong_order, lbl_preds_wrong_order = [], [], []
         self.loss = 0
         # we start from 1 because we don't consider root
-        for i in range(1, max_sent_len):
-            num_active = col_lengths[i]
-            # if we are training - create label variable
-            if train:
+        for i in range(1, self.max_sent_len):
+            self.num_active = col_lengths[i]
+            # if we are calculating loss create truth variables
+            if calc_loss:
                 # i-1 because sentence has root appended to beginning
                 i_h = i-1
-                gold_heads = Variable(heads[i_h][:num_active])
-                gold_labels = Variable(labels[i_h][:num_active])
+                gold_heads = Variable(heads[i_h][:self.num_active])
+                gold_labels = Variable(labels[i_h][:self.num_active])
+            # ================== HEAD PREDICTION ======================
             # We broadcast w_arc[i] to the size of u_as since we want to add
             # the activation of a_i to all different activations a_j
             a_u, a_w = F.broadcast(u_arc, w_arc[i])
@@ -253,12 +251,8 @@ class Dense(chainer.Chain):
             UWa = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
             # compute g(a_j, a_i)
             g_a = self.vT(UWa)
-            arcs = F.swapaxes(F.reshape(g_a, (-1, batch_size)), 0, 1)
-            arcs = F.where(mask, arcs, minf)[:num_active]
-            if train:
-                loss = F.softmax_cross_entropy(arcs, gold_heads,
-                                               ignore_label=self.CHAINER_IGNORE_LABEL)
-                self.loss += loss
+            arcs = F.swapaxes(F.reshape(g_a, (-1, self.batch_size)), 0, 1)
+            arcs = F.where(mask, arcs, minf)[:self.num_active]
             # can't append to predictions after padding
             # because we get elements we shouldn't
             # pred is the index of what we believe to be the head
@@ -268,51 +262,36 @@ class Dense(chainer.Chain):
             arc_pred = np.argmax(arcs.data, 1)
             arc_preds_wrong_order.append(arc_pred)
 
-            l_heads = u_lbl[arc_pred, np.arange(len(arc_pred)), :]
-            l_w = w_lbl[i][:num_active]
+            # ================== LABEL PREDICTION ======================
+            # TODO: maybe we should use arc_pred sometimes in training??
+            head_indices = gold_heads.data if chainer.config.train else arc_pred
+            l_heads = u_lbl[head_indices, np.arange(len(arc_pred)), :]
+            l_w = w_lbl[i][:self.num_active]
             # l_heads, l_w = F.broadcast(l_heads, w_lbl[i])
             UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
             lbls = self.V_lblT(UWl)
-            if train:
-                loss = F.softmax_cross_entropy(lbls, gold_labels,
+
+            # Calculate losses
+            if calc_loss:
+                head_loss = F.softmax_cross_entropy(arcs, gold_heads,
                                                ignore_label=self.CHAINER_IGNORE_LABEL)
-                self.loss += loss
+                self.loss += head_loss
+                label_loss = F.softmax_cross_entropy(lbls, gold_labels,
+                                               ignore_label=self.CHAINER_IGNORE_LABEL)
+                self.loss += label_loss
 
             lbl_pred = np.argmax(lbls.data, 1)
             lbl_preds_wrong_order.append(lbl_pred)
             # we only bother actually getting the softmax values
             # if we are to visualise the results
             if self.visualise:
-                # replace logits with prob from softmax
-                arcs = F.softmax(arcs)
-                arcs = F.pad(arcs, [(0, int(batch_size - num_active)), (0, 0)],
-                             'constant', constant_values=np.exp(self.MIN_PAD))
-                lbls = F.softmax(lbls)
-                one_hot_index = np.zeros(max_sent_len, dtype=np.float32)
-                one_hot_arc = np.zeros(max_sent_len, dtype=np.float32)
-                correct_head_index = int(gold_heads.data[0])
-                one_hot_arc[correct_head_index] = 1.
-                one_hot_index[i] = 1.
-                one_hot_lbl = np.zeros(self.num_labels, dtype=np.float32)
-                correct_lbl_index = int(gold_labels.data[0]) 
-                one_hot_lbl[correct_lbl_index] = 1.
-                six.print_(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
-                                     'Real label: %-110s\nPred label: %-110s\n\n'
-                                     'Sleep time: %.2f - change with up and down arrow keys') % (
-                     '[%s] %d' % (bar(one_hot_index[:90]), i),
-                     '[%s] %d |%d|' % (bar(one_hot_arc[:90]), correct_head_index, abs(correct_head_index - i)),
-                        '[%s]' % bar(arcs.data[0].reshape(-1)[:90]),
-                        '[%s] %s' % (bar(one_hot_lbl), UDepVocab.TAGS[correct_lbl_index]),
-                        '[%s]' % bar(lbls.data[0].reshape(-1)),
-                        self.sleep_time),
-                      end='', flush=True)
-                sleep(self.sleep_time)
+                self._visualise()
             else:
-                arcs = F.pad(arcs, [(0, int(batch_size - num_active)), (0, 0)],
+                arcs = F.pad(arcs, [(0, int(self.batch_size - self.num_active)), (0, 0)],
                              'constant', constant_values=self.MIN_PAD)
             # permute back to correct batch order
             arcs = F.permutate(arcs, np.array(perm_indices, dtype=np.int32))
-            sent_arcs.append(F.reshape(arcs, (batch_size, -1, 1)))
+            sent_arcs.append(F.reshape(arcs, (self.batch_size, -1, 1)))
         self.arcs = F.concat(sent_arcs, axis=2)
         # inverse permutation indices - to undo the permutation
         inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
@@ -324,6 +303,32 @@ class Dense(chainer.Chain):
                      for i in inv_perm_indices] 
         return arc_preds, lbl_preds
         # TODO Think of ways of avoiding self prediction
+
+    def _visualise(self, i, arcs, lbls, gold_heads, gold_labels):
+        # replace logits with prob from softmax
+        arcs = F.softmax(arcs)
+        arcs = F.pad(arcs, [(0, int(self.batch_size - self.num_active)), (0, 0)],
+                     'constant', constant_values=np.exp(self.MIN_PAD))
+        lbls = F.softmax(lbls)
+        one_hot_index = np.zeros(self.max_sent_len, dtype=np.float32)
+        one_hot_arc = np.zeros(self.max_sent_len, dtype=np.float32)
+        correct_head_index = int(gold_heads.data[0])
+        one_hot_arc[correct_head_index] = 1.
+        one_hot_index[i] = 1.
+        one_hot_lbl = np.zeros(self.num_labels, dtype=np.float32)
+        correct_lbl_index = int(gold_labels.data[0]) 
+        one_hot_lbl[correct_lbl_index] = 1.
+        six.print_(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
+                             'Real label: %-110s\nPred label: %-110s\n\n'
+                             'Sleep time: %.2f - change with up and down arrow keys') % (
+             '[%s] %d' % (bar(one_hot_index[:90]), i),
+             '[%s] %d |%d|' % (bar(one_hot_arc[:90]), correct_head_index, abs(correct_head_index - i)),
+                '[%s]' % bar(arcs.data[0].reshape(-1)[:90]),
+                '[%s] %s' % (bar(one_hot_lbl), UDepVocab.TAGS[correct_lbl_index]),
+                '[%s]' % bar(lbls.data[0].reshape(-1)),
+                self.sleep_time),
+              end='', flush=True)
+        sleep(self.sleep_time)
 
     def reset_state(self):
         # reset the state of LSTM layers
