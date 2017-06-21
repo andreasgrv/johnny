@@ -75,7 +75,7 @@ def test_can_predict_correct():
         model.reset_state()
         # update parameters
         opt.update()
-    assert(r == oh_heads)
+    assert([h.tolist() for h in r] == oh_heads)
 
 def test_batching_same_size_dropout():
     np.random.seed(SEED)

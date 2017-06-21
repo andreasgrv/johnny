@@ -69,12 +69,11 @@ class Dense(chainer.Chain):
         self.add_link('W_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
 
     def _pad_batch(self, seq):
-        max_seq_len = len(seq[0])
         batch = self.xp.array([[sent[i] if i < len(sent)
                                 else self.CHAINER_IGNORE_LABEL
                                 for sent in seq]
-                               for i in range(max_seq_len)],
-                              dtype=np.int32)
+                               for i in range(self.max_sent_len)],
+                              dtype=self.xp.int32)
         # TODO - only if gpu mode
         if self.gpu_id >= 0:
             cuda.to_gpu(batch, self.gpu_id)
@@ -125,6 +124,7 @@ class Dense(chainer.Chain):
         of same size can speed up training - prediction.
         """
         calc_loss = ((heads is not None) and (labels is not None))
+        input_sent_lengths = [len(sent) - 1 for sent in s_words]
         # in order to process batches of different sized sentences using LSTM in chainer
         # we need to sort by sentence length.
         # The longest sentences in tokens need to be at the beginning of the
@@ -163,7 +163,8 @@ class Dense(chainer.Chain):
 
         # mask needed because sentences aren't all the same length
         mask = (f_sents != self.CHAINER_IGNORE_LABEL).T
-        col_lengths = np.sum(mask, axis=0)
+        col_lengths = self.xp.sum(mask, axis=0)
+        # total_tokens = self.xp.sum(col_lengths)
         # feed lists of words into forward and backward lstms
         # each list is a column of words if we imagine the sentence of each batch
         # concatenated vertically
@@ -195,10 +196,10 @@ class Dense(chainer.Chain):
         corrected_align = []
         for i, l in enumerate(sent_lengths):
             # set what to throw away
-            perm = np.hstack([   # reverse beginning of list
-                              np.arange(l-1, -1, -1, dtype=np.int32),
-                                 # leave rest of elements the same
-                              np.arange(l, self.max_sent_len, dtype=np.int32)])
+            perm = self.xp.hstack([   # reverse beginning of list
+                                   self.xp.arange(l-1, -1, -1, dtype=self.xp.int32),
+                                      # leave rest of elements the same
+                                   self.xp.arange(l, self.max_sent_len, dtype=self.xp.int32)])
             correct = F.permutate(joint_b_states[i], perm, axis=0)
             corrected_align.append(F.reshape(correct, (1, self.max_sent_len, -1)))
         # concatenate the batches again
@@ -232,7 +233,8 @@ class Dense(chainer.Chain):
         w_lbl = F.swapaxes(F.reshape(w_lbl, (self.batch_size, -1, self.mlp_lbl_units)), 0, 1)
 
         # the probability of each word being the head of sent[i]
-        sent_arcs, arc_preds_wrong_order, lbl_preds_wrong_order = [], [], []
+        # sent_arcs, sent_lbls, arc_preds_wrong_order, lbl_preds_wrong_order = [], [], [], []
+        sent_arcs, sent_lbls = [], []
         self.loss = 0
         # we start from 1 because we don't consider root
         for i in range(1, self.max_sent_len):
@@ -259,15 +261,15 @@ class Dense(chainer.Chain):
             # ----------------------------------------
             # TODO: might need to be chainer function instead of np
             # ----------------------------------------
-            arc_pred = np.argmax(arcs.data, 1)
-            arc_preds_wrong_order.append(arc_pred)
+
+            arc_pred = self.xp.argmax(arcs.data, 1)
+            # arc_preds_wrong_order.append(arc_pred)
 
             # ================== LABEL PREDICTION ======================
             # TODO: maybe we should use arc_pred sometimes in training??
             head_indices = gold_heads.data if chainer.config.train else arc_pred
-            l_heads = u_lbl[head_indices, np.arange(len(arc_pred)), :]
+            l_heads = u_lbl[head_indices, self.xp.arange(len(arc_pred)), :]
             l_w = w_lbl[i][:self.num_active]
-            # l_heads, l_w = F.broadcast(l_heads, w_lbl[i])
             UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
             lbls = self.V_lblT(UWl)
 
@@ -279,45 +281,64 @@ class Dense(chainer.Chain):
                 label_loss = F.sum(F.softmax_cross_entropy(lbls, gold_labels, reduce='no'))
                 self.loss += label_loss
 
-            lbl_pred = np.argmax(lbls.data, 1)
-            lbl_preds_wrong_order.append(lbl_pred)
+            # lbl_pred = self.xp.argmax(lbls.data, 1)
+            # lbl_preds_wrong_order.append(lbl_pred)
+
             # we only bother actually getting the softmax values
             # if we are to visualise the results
             if self.visualise:
-                self._visualise()
+                # replace logits with prob from softmax - we pad with the exp
+                # of the MIN_PAD - since that would have been the value if we passed
+                # the MIN_PAD through the softmax
+                arcs = F.softmax(arcs)
+                arcs = F.pad(arcs, [(0, int(self.batch_size - self.num_active)), (0, 0)],
+                             'constant', constant_values=self.xp.exp(self.MIN_PAD))
+                lbls = F.softmax(lbls)
+                lbls = F.pad(lbls, [(0, int(self.batch_size - self.num_active)), (0, 0)],
+                             'constant', constant_values=self.xp.exp(self.MIN_PAD))
+                self._visualise(i, arcs, lbls, gold_heads, gold_labels)
             else:
                 arcs = F.pad(arcs, [(0, int(self.batch_size - self.num_active)), (0, 0)],
                              'constant', constant_values=self.MIN_PAD)
+                lbls = F.pad(lbls, [(0, int(self.batch_size - self.num_active)), (0, 0)],
+                             'constant', constant_values=self.MIN_PAD)
             # permute back to correct batch order
-            arcs = F.permutate(arcs, np.array(perm_indices, dtype=np.int32))
+            perm_indices = self.xp.array(perm_indices, dtype=self.xp.int32)
+            arcs = F.permutate(arcs, perm_indices, inv=True)
+            lbls = F.permutate(lbls, perm_indices, inv=True)
             sent_arcs.append(F.reshape(arcs, (self.batch_size, -1, 1)))
+            sent_lbls.append(F.reshape(lbls, (self.batch_size, -1, 1)))
+
         # normalize loss over all tokens seen
         # self.loss = self.loss / total_tokens
 
         self.arcs = F.concat(sent_arcs, axis=2)
+        self.lbls = F.concat(sent_lbls, axis=2)
+        self.arcs.data = cuda.to_cpu(self.arcs.data)
+        self.lbls.data = cuda.to_cpu(self.lbls.data)
+        arc_preds = np.argmax(self.arcs.data, axis=1)
+        lbl_preds = np.argmax(self.lbls.data, axis=1)
+
+        arc_preds = [arc_p[:l] for arc_p, l in zip(arc_preds, input_sent_lengths)]
+        lbl_preds = [lbl_p[:l] for lbl_p, l in zip(lbl_preds, input_sent_lengths)]
         # inverse permutation indices - to undo the permutation
-        inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
-        arc_preds = [[pred[i] for pred in arc_preds_wrong_order
-                      if i < len(pred)]
-                     for i in inv_perm_indices] 
-        lbl_preds = [[pred[i] for pred in lbl_preds_wrong_order
-                      if i < len(pred)]
-                     for i in inv_perm_indices] 
+        # inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
+        # arc_preds = [[pred[i] for pred in arc_preds_wrong_order
+        #               if i < len(pred)]
+        #              for i in inv_perm_indices] 
+        # lbl_preds = [[pred[i] for pred in lbl_preds_wrong_order
+        #               if i < len(pred)]
+        #              for i in inv_perm_indices] 
         return arc_preds, lbl_preds
         # TODO Think of ways of avoiding self prediction
 
     def _visualise(self, i, arcs, lbls, gold_heads, gold_labels):
-        # replace logits with prob from softmax
-        arcs = F.softmax(arcs)
-        arcs = F.pad(arcs, [(0, int(self.batch_size - self.num_active)), (0, 0)],
-                     'constant', constant_values=np.exp(self.MIN_PAD))
-        lbls = F.softmax(lbls)
-        one_hot_index = np.zeros(self.max_sent_len, dtype=np.float32)
-        one_hot_arc = np.zeros(self.max_sent_len, dtype=np.float32)
+        one_hot_index = self.xp.zeros(self.max_sent_len, dtype=self.xp.float32)
+        one_hot_arc = self.xp.zeros(self.max_sent_len, dtype=self.xp.float32)
         correct_head_index = int(gold_heads.data[0])
         one_hot_arc[correct_head_index] = 1.
         one_hot_index[i] = 1.
-        one_hot_lbl = np.zeros(self.num_labels, dtype=np.float32)
+        one_hot_lbl = self.xp.zeros(self.num_labels, dtype=self.xp.float32)
         correct_lbl_index = int(gold_labels.data[0]) 
         one_hot_lbl[correct_lbl_index] = 1.
         six.print_(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
