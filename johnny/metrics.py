@@ -12,7 +12,7 @@ class Average(object):
     def __call__(self, value):
         self.count += 1
         self.cumsum += value
-        return self.cumsum / self.count
+        return self.cumsum / self.count if self.count else 0.0
 
     def reset(self):
         self.count = 0
@@ -20,7 +20,7 @@ class Average(object):
 
     @property
     def score(self):
-        return self.cumsum / self.count
+        return self.cumsum / self.count if self.count else 0.0
 
 
 class UAS(Average):
@@ -37,7 +37,7 @@ class UAS(Average):
         correct = float(np.sum(preds == truth))
         self.count += len(preds)
         self.cumsum += correct
-        return self.cumsum / self.count
+        return self.cumsum / self.count if self.count else 0.0
 
 
 class LAS(Average):
@@ -60,4 +60,4 @@ class LAS(Average):
         correct = float(np.sum((p_arcs == t_arcs) & (p_labels == t_labels)))
         self.count += len(p_arcs)
         self.cumsum += correct
-        return self.cumsum / self.count
+        return self.cumsum / self.count if self.count else 0.0
