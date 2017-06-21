@@ -273,11 +273,10 @@ class Dense(chainer.Chain):
 
             # Calculate losses
             if calc_loss:
-                head_loss = F.softmax_cross_entropy(arcs, gold_heads,
-                                               ignore_label=self.CHAINER_IGNORE_LABEL)
+                # we don't want to average out over seen words yet
+                head_loss = F.sum(F.softmax_cross_entropy(arcs, gold_heads, reduce='no'))
                 self.loss += head_loss
-                label_loss = F.softmax_cross_entropy(lbls, gold_labels,
-                                               ignore_label=self.CHAINER_IGNORE_LABEL)
+                label_loss = F.sum(F.softmax_cross_entropy(lbls, gold_labels, reduce='no'))
                 self.loss += label_loss
 
             lbl_pred = np.argmax(lbls.data, 1)
@@ -292,6 +291,9 @@ class Dense(chainer.Chain):
             # permute back to correct batch order
             arcs = F.permutate(arcs, np.array(perm_indices, dtype=np.int32))
             sent_arcs.append(F.reshape(arcs, (self.batch_size, -1, 1)))
+        # normalize loss over all tokens seen
+        # self.loss = self.loss / total_tokens
+
         self.arcs = F.concat(sent_arcs, axis=2)
         # inverse permutation indices - to undo the permutation
         inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
