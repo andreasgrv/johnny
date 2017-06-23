@@ -73,19 +73,32 @@ class Dense(chainer.Chain):
         self.add_link('U_lbl', L.Linear(self.unit_mult*lstm_units, mlp_lbl_units))
         self.add_link('W_lbl', L.Linear(self.unit_mult*lstm_units, mlp_lbl_units))
 
-    def _pad_batch(self, seq):
+    def _pad_batch(self, seqs):
+        """Pads list of sequences of different length to max
+        seq length - we can't send a list of sequences of
+        different size to the gpu.
+        
+        At the same time as padding converts rows to columns.
+        NOTE: seqs must be already sorted from longest to
+        shortest (longest at 0 index) if feeding into lstm.
+        Example:
+
+        [[1,2,3], [4,5], [6]] -> [[1,4,6],[2,5,-1],[3,-1,-1]]
+        """
+        max_seq_len = len(seqs[0])
         batch = self.xp.array([[sent[i] if i < len(sent)
                                 else self.CHAINER_IGNORE_LABEL
-                                for sent in seq]
-                               for i in range(self.max_sent_len)],
+                                for sent in seqs]
+                               for i in range(max_seq_len)],
                               dtype=self.xp.int32)
         if self.gpu_id >= 0:
             cuda.to_gpu(batch, self.gpu_id)
         return batch
 
     def _feed_lstms(self, lstm_layers, sents, tags, boundaries):
-        """pass batches of data through the lstm layers
-        and store the activations"""
+        """Pass batches of data through the lstm layers
+        and generate the sentence embeddings for each
+        sentence in the batch"""
         # words and tags should have same length
         assert(len(sents) == len(tags))
         # see whether it is forward or backward from name
@@ -119,12 +132,20 @@ class Dense(chainer.Chain):
             self[state_name].append(F.reshape(top_h, h_vec_shape))
 
     def _encode_sents(f_sents, f_tags):
+        """Creates lstm embedding of the sentence and pos tags.
+        If use_bilstm is specified - the embedding is formed from
+        concatenating the forward and backward activations
+        corresponding to each word.
+        """
         pass
 
     def _predict_heads():
+        """For each token in the sentence predict which token in the sentence
+        is its head."""
         pass
 
     def _predict_labels():
+        """Predict the label for each of the arcs predicted in _predict_heads."""
         pass
 
     def __call__(self, s_words, s_pos, heads=None, labels=None):
