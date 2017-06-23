@@ -21,6 +21,7 @@ class Dense(chainer.Chain):
                  word_units=100,
                  lstm_units=100,
                  num_lstm_layers=1,
+                 use_bilstm=True,
                  dropout_inp=0.1,
                  dropout_rec=0.5,
                  mlp_arc_units=100,
@@ -36,6 +37,8 @@ class Dense(chainer.Chain):
         self.pos_units = pos_units
         self.word_units = word_units
         self.lstm_units = lstm_units
+        self.num_lstm_layers = num_lstm_layers
+        self.use_bilstm = use_bilstm
         self.dropout_inp = dropout_inp
         self.dropout_rec = dropout_rec
         self.mlp_arc_units = mlp_arc_units
@@ -45,28 +48,30 @@ class Dense(chainer.Chain):
         self.visualise = visualise
         self.sleep_time = 0
 
+        self.unit_mult = 2 if self.use_bilstm else 1
+
         self.add_link('embed_word', L.EmbedID(self.vocab_size, self.word_units))
         self.add_link('embed_pos', L.EmbedID(self.pos_size, self.pos_units))
         self.f_lstm, self.b_lstm = [], []
-        self.num_lstm_layers = num_lstm_layers
         for i in range(self.num_lstm_layers):
             # if this is the first lstm layer we need to have same number of
             # units as pos_units + word_units - else we use lstm_units num units
             in_size = pos_units + word_units if i == 0 else lstm_units
             f_name = 'f_lstm_%d' % i
-            b_name = 'b_lstm_%d' % i
             self.f_lstm.append(f_name)
-            self.b_lstm.append(b_name)
             self.add_link(f_name, L.LSTM(in_size, lstm_units))
-            self.add_link(b_name, L.LSTM(in_size, lstm_units))
+            if self.use_bilstm:
+                b_name = 'b_lstm_%d' % i
+                self.b_lstm.append(b_name)
+                self.add_link(b_name, L.LSTM(in_size, lstm_units))
 
         self.add_link('vT', L.Linear(mlp_arc_units, 1))
-        self.add_link('U_arc', L.Linear(2*lstm_units, mlp_arc_units))
-        self.add_link('W_arc', L.Linear(2*lstm_units, mlp_arc_units))
+        self.add_link('U_arc', L.Linear(self.unit_mult*lstm_units, mlp_arc_units))
+        self.add_link('W_arc', L.Linear(self.unit_mult*lstm_units, mlp_arc_units))
 
         self.add_link('V_lblT', L.Linear(mlp_lbl_units, self.num_labels))
-        self.add_link('U_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
-        self.add_link('W_lbl', L.Linear(2*lstm_units, mlp_lbl_units))
+        self.add_link('U_lbl', L.Linear(self.unit_mult*lstm_units, mlp_lbl_units))
+        self.add_link('W_lbl', L.Linear(self.unit_mult*lstm_units, mlp_lbl_units))
 
     def _pad_batch(self, seq):
         batch = self.xp.array([[sent[i] if i < len(sent)
@@ -74,7 +79,6 @@ class Dense(chainer.Chain):
                                 for sent in seq]
                                for i in range(self.max_sent_len)],
                               dtype=self.xp.int32)
-        # TODO - only if gpu mode
         if self.gpu_id >= 0:
             cuda.to_gpu(batch, self.gpu_id)
         return batch
@@ -84,10 +88,14 @@ class Dense(chainer.Chain):
         and store the activations"""
         # words and tags should have same length
         assert(len(sents) == len(tags))
-        f_or_b = lstm_layers[-1][:1]
+        # see whether it is forward or backward from name
+        f_or_b = lstm_layers[-1][:1] # first char of name is f for fwd
         state_name = '%s_lstm_states' % f_or_b
-        # set f_lstm_states or b_lstm_states
+        # we will append top lstm layer output to f_lstm_states or b_lstm_states
         setattr(self, state_name, [])
+        # we will reshape top lstm layer output to below shape
+        # for easy concatenation along the sequence axis - index 1
+        h_vec_shape = (self.batch_size, 1, self.lstm_units)
         for i in range(self.max_sent_len):
             # only get embedding up to padding
             # needed to pad because otherwise can't move whole batch to gpu
@@ -107,7 +115,17 @@ class Dense(chainer.Chain):
                     act = F.dropout(act, ratio=self.dropout_rec)
             top_h = self[lstm_layers[-1]].h
             # we reshape to allow easy concatenation of activations
-            self[state_name].append(F.reshape(top_h, (self.batch_size, 1, self.lstm_units)))
+            # along sequence dimension
+            self[state_name].append(F.reshape(top_h, h_vec_shape))
+
+    def _encode_sents(f_sents, f_tags):
+        pass
+
+    def _predict_heads():
+        pass
+
+    def _predict_labels():
+        pass
 
     def __call__(self, s_words, s_pos, heads=None, labels=None):
         """ Expects a batch of sentences 
@@ -143,19 +161,22 @@ class Dense(chainer.Chain):
                                                      reverse=True))
             f_sents, f_tags = zip(*sorted_batch)
         assert(len(f_sents) == len(s_words))
-        # also create the sentence in reverse order for the bilstm
-        b_sents, b_tags = [sent[::-1] for sent in f_sents], [tags[::-1] for tags in f_tags]
-
-        sent_lengths = [len(sent) for sent in f_sents]
 
         self.batch_size = len(f_sents)
         self.max_sent_len = len(f_sents[0])
 
+        sent_lengths = [len(sent) for sent in f_sents]
+
+        if self.use_bilstm:
+            # also create the sentence in reverse order for the bilstm
+            b_sents, b_tags = [sent[::-1] for sent in f_sents], [tags[::-1] for tags in f_tags]
+            b_sents = self._pad_batch(b_sents)
+            b_tags = self._pad_batch(b_tags)
+
         # mask batches for use in lstm
         f_sents = self._pad_batch(f_sents)
-        b_sents = self._pad_batch(b_sents)
         f_tags = self._pad_batch(f_tags)
-        b_tags = self._pad_batch(b_tags)
+
 
         if calc_loss:
             heads = self._pad_batch(sorted_heads)
@@ -163,49 +184,55 @@ class Dense(chainer.Chain):
 
         # mask needed because sentences aren't all the same length
         mask = (f_sents != self.CHAINER_IGNORE_LABEL).T
+
+        mask_vals = Variable(self.xp.full((self.batch_size, self.max_sent_len),
+                                           self.MIN_PAD,
+                                           dtype=self.xp.float32))
+
         col_lengths = self.xp.sum(mask, axis=0)
         # total_tokens = self.xp.sum(col_lengths)
         # feed lists of words into forward and backward lstms
         # each list is a column of words if we imagine the sentence of each batch
         # concatenated vertically
         self._feed_lstms(self.f_lstm, f_sents, f_tags, col_lengths)
-        self._feed_lstms(self.b_lstm, b_sents, b_tags, col_lengths)
         joint_f_states = F.concat(self.f_lstm_states, axis=1)
-        # need to shift activations because of sentence length difference
-        # ------------------------- EXPLANATION -------------------------
-        # assume rows are batches of sentences - and each number a vector
-        # of numbers # - the activation that corresponds to the word, -1
-        # represents the fact that the sentence is shorter.
-        # ---------------------------------------------------------------
-        # fwd lstm act :  [1,  2,  3]       bwd lstm act :  [3 ,  2,  1]
-        #                 [4,  5, -1]                       [5 ,  4, -1]
-        #                 [6, -1, -1]                       [6 , -1, -1]
-        # 
-        # Notice that we cant simply reverse the backword lstm activations
-        # and concatenate them - because for smaller sentences we would be
-        # concatenating with states that don't correspond to words.
-        # So we reverse the activations up to the length of the sentence.
-        # ---------------------------------------------------------------
-        # fwd lstm act :  [1,  2,  3]       bwd lstm act :  [1 , 2,  3]
-        #                 [4,  5, -1]                       [4 , 5, -1]
-        #                 [6, -1, -1]                       [6, -1, -1]
-        # ---------------------------------------------------------------
-        joint_b_states = F.concat(self.b_lstm_states, axis=1)
-        minf = Variable(self.xp.full((self.batch_size, self.max_sent_len), self.MIN_PAD,
-                                           dtype=self.xp.float32))
-        corrected_align = []
-        for i, l in enumerate(sent_lengths):
-            # set what to throw away
-            perm = self.xp.hstack([   # reverse beginning of list
-                                   self.xp.arange(l-1, -1, -1, dtype=self.xp.int32),
-                                      # leave rest of elements the same
-                                   self.xp.arange(l, self.max_sent_len, dtype=self.xp.int32)])
-            correct = F.permutate(joint_b_states[i], perm, axis=0)
-            corrected_align.append(F.reshape(correct, (1, self.max_sent_len, -1)))
-        # concatenate the batches again
-        joint_b_states = F.concat(corrected_align, axis=0)
+        if self.use_bilstm:
+            self._feed_lstms(self.b_lstm, b_sents, b_tags, col_lengths)
+            # need to shift activations because of sentence length difference
+            # ------------------------- EXPLANATION -------------------------
+            # assume rows are batches of sentences - and each number a vector
+            # of numbers # - the activation that corresponds to the word, -1
+            # represents the fact that the sentence is shorter.
+            # ---------------------------------------------------------------
+            # fwd lstm act :  [1,  2,  3]       bwd lstm act :  [3 ,  2,  1]
+            #                 [4,  5, -1]                       [5 ,  4, -1]
+            #                 [6, -1, -1]                       [6 , -1, -1]
+            # 
+            # Notice that we cant simply reverse the backword lstm activations
+            # and concatenate them - because for smaller sentences we would be
+            # concatenating with states that don't correspond to words.
+            # So we reverse the activations up to the length of the sentence.
+            # ---------------------------------------------------------------
+            # fwd lstm act :  [1,  2,  3]       bwd lstm act :  [1 , 2,  3]
+            #                 [4,  5, -1]                       [4 , 5, -1]
+            #                 [6, -1, -1]                       [6, -1, -1]
+            # ---------------------------------------------------------------
+            joint_b_states = F.concat(self.b_lstm_states, axis=1)
+            corrected_align = []
+            for i, l in enumerate(sent_lengths):
+                # set what to throw away
+                perm = self.xp.hstack([   # reverse beginning of list
+                                       self.xp.arange(l-1, -1, -1, dtype=self.xp.int32),
+                                          # leave rest of elements the same
+                                       self.xp.arange(l, self.max_sent_len, dtype=self.xp.int32)])
+                correct = F.permutate(joint_b_states[i], perm, axis=0)
+                corrected_align.append(F.reshape(correct, (1, self.max_sent_len, -1)))
+            # concatenate the batches again
+            joint_b_states = F.concat(corrected_align, axis=0)
 
-        comb_states = F.concat((joint_f_states, joint_b_states), axis=2)
+            comb_states = F.concat((joint_f_states, joint_b_states), axis=2)
+        else:
+            comb_states = joint_f_states
 
         # In order to predict which head is most probable for a given word
         # P(w_j == head | w_i, S)  -- note for our purposes w_j is the variable
@@ -217,7 +244,7 @@ class Dense(chainer.Chain):
         # for each word, we consider all possible heads
         # we can pre-calculate U * a_j , for all a_j
         # reshape to 2D to calculate matrix multiplication
-        collapsed_comb_states = F.reshape(comb_states, (-1, self.lstm_units * 2))
+        collapsed_comb_states = F.reshape(comb_states, (-1, self.lstm_units * self.unit_mult))
         u_arc = self.U_arc(collapsed_comb_states)
         u_arc = F.swapaxes(F.reshape(u_arc, (self.batch_size, -1, self.mlp_arc_units)), 0, 1)
         # we can also pre-calculate W * a_i , for all a_i
@@ -254,7 +281,7 @@ class Dense(chainer.Chain):
             # compute g(a_j, a_i)
             g_a = self.vT(UWa)
             arcs = F.swapaxes(F.reshape(g_a, (-1, self.batch_size)), 0, 1)
-            arcs = F.where(mask, arcs, minf)[:self.num_active]
+            arcs = F.where(mask, arcs, mask_vals)[:self.num_active]
             # can't append to predictions after padding
             # because we get elements we shouldn't
             # pred is the index of what we believe to be the head
