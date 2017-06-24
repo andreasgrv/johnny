@@ -70,8 +70,10 @@ class Dense(chainer.Chain):
                 self.add_link(b_name, L.LSTM(in_size, lstm_units))
 
         self.add_link('vT', L.Linear(mlp_arc_units, 1))
-        self.add_link('U_arc', L.Linear(self.unit_mult*lstm_units, mlp_arc_units))
-        self.add_link('W_arc', L.Linear(self.unit_mult*lstm_units, mlp_arc_units))
+        # head
+        self.add_link('H_arc', L.Linear(self.unit_mult*lstm_units, mlp_arc_units))
+        # dependent
+        self.add_link('D_arc', L.Linear(self.unit_mult*lstm_units, mlp_arc_units))
 
         self.add_link('V_lblT', L.Linear(mlp_lbl_units, self.num_labels))
         self.add_link('U_lbl', L.Linear(self.unit_mult*lstm_units, mlp_lbl_units))
@@ -135,62 +137,15 @@ class Dense(chainer.Chain):
         return F.concat(states, axis=1)
 
 
-    def _encode_sents(f_sents, f_tags):
+    def _encode_sents(self, f_sents, f_tags):
         """Creates lstm embedding of the sentence and pos tags.
         If use_bilstm is specified - the embedding is formed from
         concatenating the forward and backward activations
         corresponding to each word.
         """
-        pass
-
-    def _predict_heads():
-        """For each token in the sentence predict which token in the sentence
-        is its head."""
-        pass
-
-    def _predict_labels():
-        """Predict the label for each of the arcs predicted in _predict_heads."""
-        pass
-
-    def __call__(self, s_words, s_pos, heads=None, labels=None):
-        """ Expects a batch of sentences 
-        so a list of K sentences where each sentence
-        is a 2-tuple of indices of words, indices of pos tags.
-        Example of 2 sentences:
-            [([1,5,2], [4,7,1]), ([1,2], [3,4])]
-              w1 w2      p1 p2
-              |------- s1 -------|
-
-        w = word, p = pos tag, s = sentence
-
-        This is as slow as the longest sentence - so bucketing sentences
-        of same size can speed up training - prediction.
-        """
-        calc_loss = ((heads is not None) and (labels is not None))
-        input_sent_lengths = [len(sent) - 1 for sent in s_words]
-        # in order to process batches of different sized sentences using LSTM in chainer
-        # we need to sort by sentence length.
-        # The longest sentences in tokens need to be at the beginning of the
-        # list, since chainer will simply not update the states corresponding
-        # to the smallest sentences that have 'run out of tokens'.
-        # We keep the permutation indices in order to reshuffle the output states,
-        # since we want to map the activations to the inputs.
-        if calc_loss:
-            perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos, heads, labels)),
-                                                     key=lambda x: len(x[1][0]),
-                                                     reverse=True))
-            f_sents, f_tags, sorted_heads, sorted_labels = zip(*sorted_batch)
-        else:
-            perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos)),
-                                                     key=lambda x: len(x[1][0]),
-                                                     reverse=True))
-            f_sents, f_tags = zip(*sorted_batch)
-        assert(len(f_sents) == len(s_words))
-
-        batch_size = len(f_sents)
-        max_sent_len = len(f_sents[0])
 
         sent_lengths = [len(sent) for sent in f_sents]
+        max_sent_len = sent_lengths[0]
 
         if self.use_bilstm:
             # also create the sentence in reverse order for the bilstm
@@ -205,17 +160,9 @@ class Dense(chainer.Chain):
         f_tags = self._pad_batch(f_tags)
 
 
-        if calc_loss:
-            heads = self._pad_batch(sorted_heads)
-            labels = self._pad_batch(sorted_labels)
-
         # mask needed because sentences aren't all the same length
         # mask is batch_size x sentence_length
         mask = (f_sents != self.CHAINER_IGNORE_LABEL).T
-
-        mask_vals = Variable(self.xp.full((batch_size, max_sent_len),
-                                           self.MIN_PAD,
-                                           dtype=self.xp.float32))
 
         col_lengths = self.xp.sum(mask, axis=0)
         # total_tokens = self.xp.sum(col_lengths)
@@ -259,8 +206,162 @@ class Dense(chainer.Chain):
             comb_states = F.concat((joint_f_states, joint_b_states), axis=2)
         else:
             comb_states = joint_f_states
-        # comb states is batch_size x sentence_length x lstm_units
+        return comb_states, mask, col_lengths
 
+    def _predict_heads(self, sent_states, mask, batch_stats, sorted_heads=None):
+        """For each token in the sentence predict which token in the sentence
+        is its head."""
+
+        batch_size, max_sent_len, col_lengths = batch_stats
+
+        calc_loss = sorted_heads is not None
+
+        # head activations for each token lstm activation
+        h_arc = self.H_arc(sent_states)
+        # we transform results to be indexable by sentence index for upcoming for loop
+        # h_arc is now max_sent x bs x mlp_arc_units
+        h_arc = F.swapaxes(F.reshape(h_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
+        # bs * max_sent x mlp_arc_units
+        d_arc = self.D_arc(sent_states)
+        # max_sent x bs x mlp_arc_units
+        d_arc = F.swapaxes(F.reshape(d_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
+
+        # the values to use to mask softmax for head prediction
+        # e ^ -100 is ~ zero (can be changed from self.MIN_PAD)
+        mask_vals = Variable(self.xp.full((batch_size, max_sent_len),
+                                           self.MIN_PAD,
+                                           dtype=self.xp.float32))
+
+        sent_arcs = []
+        # we start from 1 because we don't consider root
+        for i in range(1, max_sent_len):
+            num_active = col_lengths[i]
+            # if we are calculating loss create truth variables
+            if calc_loss:
+                # i-1 because sentence has root appended to beginning
+                gold_heads = Variable(sorted_heads[i-1])
+            # ================== HEAD PREDICTION ======================
+            # Because some sentences may be shorter - only num_active of the
+            # batch have valid activations for this token.
+            # We need to replace the invalid ones with zeros - because
+            # otherwise when broadcasting and summing we will modify valid
+            # batch activations for earlier tokens of the sentence.
+            invalid_pad = ((0, int(batch_size - num_active)), (0, 0))
+            d_arc_pad = F.pad(d_arc[i][:num_active], invalid_pad, 'constant', constant_values=0.)
+            # We broadcast w_arc[i] to the size of u_as since we want to add
+            # the activation of a_i to all different activations a_j
+            a_u, a_w = F.broadcast(h_arc, d_arc_pad)
+            # compute U * a_j + V * a_i for all j and this loops i
+            comb_arc = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
+            # compute g(a_j, a_i)
+            arc_logit = self.vT(comb_arc)
+            arcs = F.swapaxes(F.reshape(arc_logit, (-1, batch_size)), 0, 1)
+            arcs = F.where(mask, arcs, mask_vals)
+            # Calculate losses
+            if calc_loss:
+                # we don't want to average out over seen words yet
+                # NOTE: do not use ignore_label - in gpu mode gold_heads gets mutated
+                head_loss = F.sum(F.softmax_cross_entropy(arcs[:num_active], gold_heads[:num_active], reduce='no'))
+                self.loss += head_loss
+            sent_arcs.append(F.reshape(arcs, (batch_size, -1, 1)))
+        arcs = F.concat(sent_arcs, axis=2)
+        return arcs
+
+    def _predict_labels(self, sent_states, pred_heads, gold_heads, batch_stats,
+                        sorted_labels=None):
+        """Predict the label for each of the arcs predicted in _predict_heads."""
+        batch_size, max_sent_len, col_lengths = batch_stats
+
+        calc_loss = sorted_labels is not None
+        if calc_loss:
+            labels = self._pad_batch(sorted_labels)
+
+        u_lbl = self.U_lbl(sent_states)
+        u_lbl = F.swapaxes(F.reshape(u_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
+
+        w_lbl = self.W_lbl(sent_states)
+        w_lbl = F.swapaxes(F.reshape(w_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
+
+        pred_heads = self.xp.rollaxis(pred_heads, 2)
+        sent_lbls = []
+        # ----------------------------------------
+        # TODO: might need to be chainer function instead of np
+        # ----------------------------------------
+        # we start from 1 because we don't consider root
+        for i in range(1, max_sent_len):
+            # num_active
+            num_active = col_lengths[i]
+            # if we are calculating loss create truth variables
+            if calc_loss:
+                # i-1 because sentence has root appended to beginning
+                gold_labels = Variable(labels[i-1])
+                # might need actual variable here?
+                true_heads = gold_heads[i-1]
+            arc_pred = self.xp.argmax(pred_heads[i-1], 1)
+
+            # ================== LABEL PREDICTION ======================
+            # TODO: maybe we should use arc_pred sometimes in training??
+            # NOTE: gold_heads values after num_active get mutated here
+            # make sure you don't use ignore_label in softmax - even if ok in forward
+            # it will be wrong in backprop (we limit to :self.num_active)
+            # gh_copy = self.xp.copy(gold_heads.data)
+            head_indices = true_heads if chainer.config.train else arc_pred
+
+            l_heads = u_lbl[head_indices, self.xp.arange(len(head_indices)), :]
+            l_w = w_lbl[i]
+            UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
+            lbls = self.V_lblT(UWl)
+
+            # Calculate losses
+            if calc_loss:
+                label_loss = F.sum(F.softmax_cross_entropy(lbls[:num_active], gold_labels[:num_active], reduce='no'))
+                self.loss += label_loss
+            sent_lbls.append(F.reshape(lbls, (batch_size, -1, 1)))
+        lbls = F.concat(sent_lbls, axis=2)
+        return lbls
+
+    def __call__(self, s_words, s_pos, heads=None, labels=None):
+        """ Expects a batch of sentences 
+        so a list of K sentences where each sentence
+        is a 2-tuple of indices of words, indices of pos tags.
+        Example of 2 sentences:
+            [([1,5,2], [4,7,1]), ([1,2], [3,4])]
+              w1 w2      p1 p2
+              |------- s1 -------|
+
+        w = word, p = pos tag, s = sentence
+
+        This is as slow as the longest sentence - so bucketing sentences
+        of same size can speed up training - prediction.
+        """
+        calc_loss = ((heads is not None) and (labels is not None))
+        input_sent_lengths = [len(sent) - 1 for sent in s_words]
+        # in order to process batches of different sized sentences using LSTM in chainer
+        # we need to sort by sentence length.
+        # The longest sentences in tokens need to be at the beginning of the
+        # list, since chainer will simply not update the states corresponding
+        # to the smallest sentences that have 'run out of tokens'.
+        # We keep the permutation indices in order to reshuffle the output states,
+        # since we want to map the activations to the inputs.
+        if calc_loss:
+            perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos, heads, labels)),
+                                                     key=lambda x: len(x[1][0]),
+                                                     reverse=True))
+            f_sents, f_tags, sorted_heads, sorted_labels = zip(*sorted_batch)
+        else:
+            perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos)),
+                                                     key=lambda x: len(x[1][0]),
+                                                     reverse=True))
+            f_sents, f_tags = zip(*sorted_batch)
+            sorted_heads = None
+            sorted_labels = None
+        assert(len(f_sents) == len(s_words))
+
+        batch_size = len(f_sents)
+        max_sent_len = len(f_sents[0])
+
+        # comb states is batch_size x sentence_length x lstm_units
+        comb_states, mask, col_lengths = self._encode_sents(f_sents, f_tags)
         # In order to predict which head is most probable for a given word
         # P(w_j == head | w_i, S)  -- note for our purposes w_j is the variable
         # we compute: g(a_j, a_i) = vT * tanh(U * a_j + V * a_i)
@@ -271,112 +372,47 @@ class Dense(chainer.Chain):
         # for each word, we consider all possible heads
         # we can pre-calculate U * a_j , for all a_j
         # reshape to 2D to calculate matrix multiplication
-        collapsed_comb_states = F.reshape(comb_states, (-1, self.lstm_units * self.unit_mult))
-        u_arc = self.U_arc(collapsed_comb_states)
-        u_arc = F.swapaxes(F.reshape(u_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
-        # we can also pre-calculate W * a_i , for all a_i
-        # bs * max_sent x mlp_arc_units
-        w_arc = self.W_arc(collapsed_comb_states)
-        # max_sent x bs x mlp_arc_units
-        w_arc = F.swapaxes(F.reshape(w_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
+        comb_states_2d = F.reshape(comb_states,
+                (-1, self.lstm_units * self.unit_mult))
 
-        u_lbl = self.U_lbl(collapsed_comb_states)
-        u_lbl = F.swapaxes(F.reshape(u_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
-
-        w_lbl = self.W_lbl(collapsed_comb_states)
-        w_lbl = F.swapaxes(F.reshape(w_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
-
-        # the probability of each word being the head of sent[i]
-        sent_arcs, sent_lbls = [], []
         self.loss = 0
-        # we start from 1 because we don't consider root
-        for i in range(1, max_sent_len):
-            self.num_active = col_lengths[i]
-            # if we are calculating loss create truth variables
-            if calc_loss:
-                # i-1 because sentence has root appended to beginning
-                i_h = i-1
-                gold_heads = Variable(heads[i_h])# [:self.num_active])
-                gold_labels = Variable(labels[i_h])#[:self.num_active])
-            # ================== HEAD PREDICTION ======================
-            # Because some sentences may be shorter - only num_active of the
-            # batch have valid activations for this token.
-            # We need to replace the invalid ones with zeros - because
-            # otherwise when broadcasting and summing we will modify valid
-            # batch activations for earlier tokens of the sentence.
-            invalid_pad = ((0, int(batch_size - self.num_active)), (0, 0))
-            w = F.pad(w_arc[i][:self.num_active], invalid_pad, 'constant', constant_values=0.)
-            # We broadcast w_arc[i] to the size of u_as since we want to add
-            # the activation of a_i to all different activations a_j
-            a_u, a_w = F.broadcast(u_arc, w)
-            # compute U * a_j + V * a_i for all j and this loops i
-            UWa = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
-            self.uwa = UWa
-            # compute g(a_j, a_i)
-            g_a = self.vT(UWa)
-            arcs = F.swapaxes(F.reshape(g_a, (-1, batch_size)), 0, 1)
-            arcs = F.where(mask, arcs, mask_vals)
-            # Calculate losses
-            if calc_loss:
-                # we don't want to average out over seen words yet
-                # NOTE: do not use ignore_label - in gpu mode gold_heads gets mutated
-                head_loss = F.sum(F.softmax_cross_entropy(arcs[:self.num_active], gold_heads[:self.num_active], reduce='no'))
-                self.loss += head_loss
 
-            # can't append to predictions after padding
-            # because we get elements we shouldn't
-            # pred is the index of what we believe to be the head
-            # ----------------------------------------
-            # TODO: might need to be chainer function instead of np
-            # ----------------------------------------
-            arc_pred = self.xp.argmax(arcs.data, 1)
+        if calc_loss:
+            sorted_heads = self._pad_batch(sorted_heads)
 
-            # ================== LABEL PREDICTION ======================
-            # TODO: maybe we should use arc_pred sometimes in training??
-            # NOTE: gold_heads values after num_active get mutated here
-            # make sure you don't use ignore_label in softmax - even if ok in forward
-            # it will be wrong in backprop (we limit to :self.num_active)
-            # gh_copy = self.xp.copy(gold_heads.data)
-            head_indices = gold_heads.data if chainer.config.train else arc_pred
-            l_heads = u_lbl[head_indices, self.xp.arange(len(head_indices)), :]
-            l_w = w_lbl[i]
-            UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
-            lbls = self.V_lblT(UWl)
+        batch_stats = (batch_size, max_sent_len, col_lengths)
 
-            # Calculate losses
-            if calc_loss:
-                label_loss = F.sum(F.softmax_cross_entropy(lbls[:self.num_active], gold_labels[:self.num_active], reduce='no'))
-                self.loss += label_loss
+        arcs = self._predict_heads(comb_states_2d, mask, batch_stats,
+                sorted_heads=sorted_heads)
 
-            # lbl_pred = self.xp.argmax(lbls.data, 1)
-            # lbl_preds_wrong_order.append(lbl_pred)
+        lbls = self._predict_labels(comb_states_2d, arcs.data, sorted_heads,
+                batch_stats, sorted_labels=sorted_labels)
 
-            # we only bother actually getting the softmax values
-            # if we are to visualise the results
-            if self.visualise:
-                # replace logits with prob from softmax - we pad with the exp
-                # of the MIN_PAD - since that would have been the value if we passed
-                # the MIN_PAD through the softmax
-                arcs = F.softmax(arcs)
-                # arcs = F.pad(arcs, [(0, int(batch_size - self.num_active)), (0, 0)],
-                #              'constant', constant_values=self.xp.exp(self.MIN_PAD))
-                lbls = F.softmax(lbls)
-                # lbls = F.pad(lbls, [(0, int(batch_size - self.num_active)), (0, 0)],
-                #              'constant', constant_values=self.xp.exp(self.MIN_PAD))
-                self._visualise(i, arcs, lbls, gold_heads, gold_labels)
-            # else:
-                # arcs = F.pad(arcs, [(0, int(batch_size - self.num_active)), (0, 0)],
-                #              'constant', constant_values=self.MIN_PAD)
-                # lbls = F.pad(lbls, [(0, int(batch_size - self.num_active)), (0, 0)],
-                #              'constant', constant_values=self.MIN_PAD)
-            sent_arcs.append(F.reshape(arcs, (batch_size, -1, 1)))
-            sent_lbls.append(F.reshape(lbls, (batch_size, -1, 1)))
+        # lbl_pred = self.xp.argmax(lbls.data, 1)
+        # lbl_preds_wrong_order.append(lbl_pred)
+
+        # we only bother actually getting the softmax values
+        # if we are to visualise the results
+        # if self.visualise:
+            # replace logits with prob from softmax - we pad with the exp
+            # of the MIN_PAD - since that would have been the value if we passed
+            # the MIN_PAD through the softmax
+            # arcs = F.softmax(arcs)
+            # arcs = F.pad(arcs, [(0, int(batch_size - self.num_active)), (0, 0)],
+            #              'constant', constant_values=self.xp.exp(self.MIN_PAD))
+            # lbls = F.softmax(lbls)
+            # lbls = F.pad(lbls, [(0, int(batch_size - self.num_active)), (0, 0)],
+            #              'constant', constant_values=self.xp.exp(self.MIN_PAD))
+            # self._visualise(i, arcs, lbls, gold_heads, gold_labels)
+        # else:
+            # arcs = F.pad(arcs, [(0, int(batch_size - self.num_active)), (0, 0)],
+            #              'constant', constant_values=self.MIN_PAD)
+            # lbls = F.pad(lbls, [(0, int(batch_size - self.num_active)), (0, 0)],
+            #              'constant', constant_values=self.MIN_PAD)
 
         # normalize loss over all tokens seen
         # self.loss = self.loss / total_tokens
 
-        arcs = F.concat(sent_arcs, axis=2)
-        lbls = F.concat(sent_lbls, axis=2)
         arcs.data = cuda.to_cpu(arcs.data)
         lbls.data = cuda.to_cpu(lbls.data)
 
@@ -386,8 +422,8 @@ class Dense(chainer.Chain):
         lbls = lbls.data[inv_perm_indices]
         if self.debug:
             self.arcs = arcs
-        arc_preds = np.argmax(arcs.data, axis=1)
-        lbl_preds = np.argmax(lbls.data, axis=1)
+        arc_preds = np.argmax(arcs, axis=1)
+        lbl_preds = np.argmax(lbls, axis=1)
 
         arc_preds = [arc_p[:l] for arc_p, l in zip(arc_preds, input_sent_lengths)]
         lbl_preds = [lbl_p[:l] for lbl_p, l in zip(lbl_preds, input_sent_lengths)]
@@ -395,27 +431,27 @@ class Dense(chainer.Chain):
         # TODO Think of ways of avoiding self prediction
         return arc_preds, lbl_preds
 
-    def _visualise(self, i, arcs, lbls, gold_heads, gold_labels):
-        max_sent_len = len(arcs[0])
-        one_hot_index = self.xp.zeros(max_sent_len, dtype=self.xp.float32)
-        one_hot_arc = self.xp.zeros(max_sent_len, dtype=self.xp.float32)
-        correct_head_index = int(gold_heads.data[0])
-        one_hot_arc[correct_head_index] = 1.
-        one_hot_index[i] = 1.
-        one_hot_lbl = self.xp.zeros(self.num_labels, dtype=self.xp.float32)
-        correct_lbl_index = int(gold_labels.data[0]) 
-        one_hot_lbl[correct_lbl_index] = 1.
-        six.print_(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
-                             'Real label: %-110s\nPred label: %-110s\n\n'
-                             'Sleep time: %.2f - change with up and down arrow keys') % (
-             '[%s] %d' % (bar(one_hot_index[:90]), i),
-             '[%s] %d |%d|' % (bar(one_hot_arc[:90]), correct_head_index, abs(correct_head_index - i)),
-                '[%s]' % bar(arcs.data[0].reshape(-1)[:90]),
-                '[%s] %s' % (bar(one_hot_lbl), UDepVocab.TAGS[correct_lbl_index]),
-                '[%s]' % bar(lbls.data[0].reshape(-1)),
-                self.sleep_time),
-              end='', flush=True)
-        sleep(self.sleep_time)
+    # def _visualise(self, i, arcs, lbls, gold_heads, gold_labels):
+    #     max_sent_len = len(arcs[0])
+    #     one_hot_index = self.xp.zeros(max_sent_len, dtype=self.xp.float32)
+    #     one_hot_arc = self.xp.zeros(max_sent_len, dtype=self.xp.float32)
+    #     correct_head_index = int(gold_heads.data[0])
+    #     one_hot_arc[correct_head_index] = 1.
+    #     one_hot_index[i] = 1.
+    #     one_hot_lbl = self.xp.zeros(self.num_labels, dtype=self.xp.float32)
+    #     correct_lbl_index = int(gold_labels.data[0]) 
+    #     one_hot_lbl[correct_lbl_index] = 1.
+    #     six.print_(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
+    #                          'Real label: %-110s\nPred label: %-110s\n\n'
+    #                          'Sleep time: %.2f - change with up and down arrow keys') % (
+    #          '[%s] %d' % (bar(one_hot_index[:90]), i),
+    #          '[%s] %d |%d|' % (bar(one_hot_arc[:90]), correct_head_index, abs(correct_head_index - i)),
+    #             '[%s]' % bar(arcs.data[0].reshape(-1)[:90]),
+    #             '[%s] %s' % (bar(one_hot_lbl), UDepVocab.TAGS[correct_lbl_index]),
+    #             '[%s]' % bar(lbls.data[0].reshape(-1)),
+    #             self.sleep_time),
+    #           end='', flush=True)
+    #     sleep(self.sleep_time)
 
     def reset_state(self):
         # reset the state of LSTM layers
