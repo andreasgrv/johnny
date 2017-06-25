@@ -150,12 +150,13 @@ class BucketManager(six.Iterator):
 class Experiment(object):
 
     MODEL_SUFFIX = '.model'
+    VOCAB_SUFFIX = '.vocab'
     DATE_FORMAT = '%m-%d-%Y %H:%M:%S'
 
     def __init__(self, name, lang, **kwargs):
         self.name = name
         self.lang = lang
-        self.timeline = []
+        self.train_timeline = []
         self.timestamp = datetime.datetime.strftime(datetime.datetime.now(),
                                                     self.DATE_FORMAT)
         for k, v in kwargs.items():
@@ -164,8 +165,8 @@ class Experiment(object):
     def __repr__(self):
         return self.to_yaml()
 
-    def add_entry(self, **kwargs):
-        self.timeline.append(dict(**kwargs))
+    def add_train_entry(self, **kwargs):
+        self.train_timeline.append(dict(**kwargs))
 
     def to_yaml(self):
         return yaml.dump(self.__dict__, default_flow_style=False)
@@ -197,13 +198,15 @@ class Experiment(object):
                              'experiments in and that you have '
                              'write access' % dir_path)
 
-    def save(self, exp_folder_path=None):
+    def save(self, exp_folder_path=None, verbose=False):
         directory = self._get_dir_path(exp_folder_path)
         dir_path = os.path.join(directory, self.lang)
         self._create_exp_folder(dir_path)
-        filename = ('%s %s' % (self.name, self.timestamp))
+        filename = ('%s_%s' % (self.name, self.timestamp))
         self.filepath = os.path.join(dir_path, filename)
 
+        if verbose:
+            print('Writing experiment to %s' % self.filepath)
         with open(self.filepath, 'w') as f:
             f.write(self.to_yaml())
 
@@ -214,8 +217,12 @@ class Experiment(object):
         return cl(**yml)
 
     @property
-    def modelname(self):
+    def model_path(self):
         return '%s%s' % (self.filepath, self.MODEL_SUFFIX)
+
+    @property
+    def vocab_path(self):
+        return '%s%s' % (self.filepath, self.VOCAB_SUFFIX)
 
         
 shades = [' ', '░', '▒', '▓', '█']

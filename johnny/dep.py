@@ -49,6 +49,12 @@ class Dataset(object):
         for s in self.sents:
             yield s
 
+    def save(self, path):
+        with codecs.open(path, 'w', encoding='utf-8') as inp:
+            for sent in self:
+                s = '%s\n\n' % '\n'.join(str(t) for t in sent)
+                inp.write(s)
+
     @property
     def words(self):
         return [s.words for s in self.sents]
@@ -139,6 +145,14 @@ class Sentence(object):
                  for token in self.tokens if token.displacy_word()]
         return json.dumps(dict(arcs=arcs, words=words))
 
+    def set_heads(self, heads):
+        for t, h in zip(self.tokens, heads):
+            t.head = h
+
+    def set_labels(self, labels):
+        for t, l in zip(self.tokens, labels):
+            t.deprel = l
+
     @property
     def words(self):
         words = [ROOT_REPR]
@@ -171,12 +185,14 @@ class Sentence(object):
         return [abs(head - index) if head != 0 else 1 for index, head in enumerate(self.heads, 1)]
 
 
+@six.python_2_unicode_compatible
 class Token(object):
 
     # this is what each tab delimited attribute is expected to be
     # in the conllu data - exact order
     CONLLU_ATTRS = ['id', 'form', 'lemma', 'upostag', 'xpostag',
                     'feats', 'head', 'deprel', 'deps', 'misc']
+
     def __init__(self, *args):
         for i, prop in enumerate(args):
             label = Token.CONLLU_ATTRS[i]
@@ -189,6 +205,9 @@ class Token(object):
 
     @py2repr
     def __repr__(self):
+        return '\t'.join(six.text_type(getattr(self, attr)) for attr in Token.CONLLU_ATTRS)
+
+    def __str__(self):
         return '\t'.join(six.text_type(getattr(self, attr)) for attr in Token.CONLLU_ATTRS)
     
     def displacy_word(self, universal_pos=True):
@@ -226,10 +245,16 @@ class UDepLoader(object):
                 'root folder either using the datafolder argument or by '
                 'setting the %s environment variable.' % self.DATA_ENV_VAR)
         self.lang_folders = dict()
+        found = False
         for lang_folder in os.listdir(self.datafolder):
             match = re.match(self.LANG_FOLDER_REGEX, lang_folder)
-            lang = match.groupdict()['lang']
-            self.lang_folders[lang] = lang_folder
+            if match:
+                lang = match.groupdict()['lang']
+                self.lang_folders[lang] = lang_folder
+                found = True
+        if not found:
+            raise ValueError('No UD language folders '
+                             'found in dir %s' % self.datafolder)
 
     def __repr__(self):
         return ('<UDepLoader object from folder %s with %d languages>'
@@ -249,7 +274,9 @@ class UDepLoader(object):
                     sents.append(Sentence(tokens))
                     tokens = []
                 if line and not line.startswith(CONLLU_COMMENT):
-                    tokens.append(Token(*line.split('\t')))
+                    cols = line.split('\t')
+                    assert(len(cols) == 10)
+                    tokens.append(Token(*cols))
         return Dataset(sents)
 
     def load_train(self, lang, verbose=False):

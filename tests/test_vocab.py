@@ -33,3 +33,12 @@ def test_threshold():
     assert(e[0] != v.UNK)
     assert(e[1] == v.UNK)
     assert(e[2] == v.UNK)
+
+def test_serialisation(tmpdir):
+    f = tmpdir.join('v.vocab')
+    s = ['here', 'i', 'go', 'playing', 'the', 'fool', 'again', 'yes', 'i', 'am', 'i', 'am', 'i', 'am']
+    v = Vocab.from_token_list(s, size=20)
+    v.save(str(f))
+    v2 = Vocab.load(str(f))
+    for w in s:
+        assert v[w] == v2[w]
