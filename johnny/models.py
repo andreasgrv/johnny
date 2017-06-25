@@ -7,16 +7,25 @@ from time import sleep
 from chainer import Variable, cuda
 from johnny.utils import bar, discrete_print
 from johnny.dep import UDepVocab
+from johnny.extern import DependencyDecoder
 
 
+# TODO Check multiple roots issue
+# TODO Reimplement visualisation
+# TODO Add dropout to head and label MLPs
+# TODO Check constraint algorithms + optimise
+# TODO Maybe switch to using predicted arcs towards end of training
+# TODO Think of ways of avoiding self prediction
 class Dense(chainer.Chain):
 
     CHAINER_IGNORE_LABEL = -1
     MIN_PAD = -100.
+    TREE_OPTS = ['none', 'chu', 'eisner']
 
     def __init__(self,
                  vocab_size=10000,
                  pos_size=30,
+                 num_labels=46,
                  pos_units=30,
                  word_units=100,
                  lstm_units=100,
@@ -26,8 +35,8 @@ class Dense(chainer.Chain):
                  dropout_rec=0.5,
                  mlp_arc_units=100,
                  mlp_lbl_units=100,
+                 treeify='chu',
                  gpu_id=-1,
-                 num_labels=46,
                  visualise=False,
                  debug=False
                  ):
@@ -35,6 +44,7 @@ class Dense(chainer.Chain):
         super(Dense, self).__init__()
         self.vocab_size = vocab_size
         self.pos_size = pos_size
+        self.num_labels = num_labels
         self.pos_units = pos_units
         self.word_units = word_units
         self.lstm_units = lstm_units
@@ -44,12 +54,13 @@ class Dense(chainer.Chain):
         self.dropout_rec = dropout_rec
         self.mlp_arc_units = mlp_arc_units
         self.mlp_lbl_units = mlp_lbl_units
-        self.num_labels = num_labels
+        self.treeify = treeify.lower()
         self.gpu_id = gpu_id
         self.visualise = visualise
         self.debug = debug
         self.sleep_time = 0
 
+        assert(treeify in self.TREE_OPTS)
         self.unit_mult = 2 if self.use_bilstm else 1
 
         self.add_link('embed_word', L.EmbedID(self.vocab_size, self.word_units,
@@ -282,11 +293,7 @@ class Dense(chainer.Chain):
         w_lbl = self.W_lbl(sent_states)
         w_lbl = F.swapaxes(F.reshape(w_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
 
-        pred_heads = self.xp.rollaxis(pred_heads, 2)
         sent_lbls = []
-        # ----------------------------------------
-        # TODO: might need to be chainer function instead of np
-        # ----------------------------------------
         # we start from 1 because we don't consider root
         for i in range(1, max_sent_len):
             # num_active
@@ -297,7 +304,7 @@ class Dense(chainer.Chain):
                 gold_labels = Variable(labels[i-1])
                 # might need actual variable here?
                 true_heads = gold_heads[i-1]
-            arc_pred = self.xp.argmax(pred_heads[i-1], 1)
+            arc_pred = pred_heads[i-1]
 
             # ================== LABEL PREDICTION ======================
             # TODO: maybe we should use arc_pred sometimes in training??
@@ -385,11 +392,35 @@ class Dense(chainer.Chain):
         arcs = self._predict_heads(comb_states_2d, mask, batch_stats,
                 sorted_heads=sorted_heads)
 
-        lbls = self._predict_labels(comb_states_2d, arcs.data, sorted_heads,
-                batch_stats, sorted_labels=sorted_labels)
+        if self.debug:
+            self.arcs = cuda.to_cpu(arcs.data)
 
-        # lbl_pred = self.xp.argmax(lbls.data, 1)
-        # lbl_preds_wrong_order.append(lbl_pred)
+        if self.treeify != 'none':
+            # TODO: check multiple roots issue
+            # We process the head scores to apply tree constraints
+            arcs = cuda.to_cpu(arcs.data)
+            # DependencyDecoder expects a square matrix - fill root col with zeros
+            pd_arcs = np.pad(arcs, ((0, 0), (0, 0), (1, 0)), 'constant')
+            dd = DependencyDecoder()
+            if self.treeify == 'chu':
+                # Just remove cycles, non-projective trees are ok
+                arc_preds = np.array([dd.parse_nonproj(each)[1:] for each in pd_arcs])
+            elif self.treeify == 'eisner':
+                # Remove cycles and make sure trees are projective
+                arc_preds = np.array([dd.parse_proj(each)[1:] for each in pd_arcs])
+            else:
+                raise ValueError('Unexpected method')
+            p_arcs = self._pad_batch(arc_preds)
+        else:
+            # We ignore tree constraints - head predictions may create cycles
+            # we pass predict_labels the gpu object
+            arcs = arcs.data
+            p_arcs = self.xp.argmax(arcs, axis=1)
+            arc_preds = cuda.to_cpu(p_arcs)
+            p_arcs = np.swapaxes(p_arcs, 0, 1)
+
+        lbls = self._predict_labels(comb_states_2d, p_arcs, sorted_heads,
+                batch_stats, sorted_labels=sorted_labels)
 
         # we only bother actually getting the softmax values
         # if we are to visualise the results
@@ -413,22 +444,20 @@ class Dense(chainer.Chain):
         # normalize loss over all tokens seen
         # self.loss = self.loss / total_tokens
 
-        arcs.data = cuda.to_cpu(arcs.data)
         lbls.data = cuda.to_cpu(lbls.data)
 
-        # permute back to correct batch order
         inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
-        arcs = arcs.data[inv_perm_indices]
-        lbls = lbls.data[inv_perm_indices]
         if self.debug:
-            self.arcs = arcs
-        arc_preds = np.argmax(arcs, axis=1)
+            self.arcs = self.arcs[inv_perm_indices]
+        # permute back to correct batch order
+        arcs = arc_preds[inv_perm_indices]
+        lbls = lbls.data[inv_perm_indices]
+
         lbl_preds = np.argmax(lbls, axis=1)
 
-        arc_preds = [arc_p[:l] for arc_p, l in zip(arc_preds, input_sent_lengths)]
+        arc_preds = [arc_p[:l] for arc_p, l in zip(arcs, input_sent_lengths)]
         lbl_preds = [lbl_p[:l] for lbl_p, l in zip(lbl_preds, input_sent_lengths)]
 
-        # TODO Think of ways of avoiding self prediction
         return arc_preds, lbl_preds
 
     # def _visualise(self, i, arcs, lbls, gold_heads, gold_labels):

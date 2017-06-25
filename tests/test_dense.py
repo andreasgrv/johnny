@@ -58,7 +58,7 @@ def test_can_predict_correct():
 
     opt = optimizers.Adam(alpha=0.1)
 
-    model = Dense(vocab_size=10, pos_size=10, pos_units=1, word_units=1, lstm_units=8, debug=True)
+    model = Dense(vocab_size=10, pos_size=10, pos_units=1, word_units=1, lstm_units=8, treeify='none', debug=True)
     opt.setup(model)
     # gradient clipping
     opt.add_hook(optimizer.GradientClipping(threshold=5))
