@@ -44,9 +44,10 @@ class LAS(Average):
 
     '''Labelled Attachment Score - Scorer'''
 
-    def __init__(self, label='LAS', num_labels=None):
+    def __init__(self, num_labels=None, label='LAS'):
         Average.__init__(self, label)
-        if num_labels is not None:
+        self.num_labels = num_labels
+        if self.num_labels is not None:
             self.conf_matrix = np.zeros((num_labels, num_labels),
                                         dtype=np.int32)
 
@@ -57,6 +58,8 @@ class LAS(Average):
         t_arcs = np.asarray(true_arcs)
         p_labels = np.asarray(pred_labels)
         t_labels = np.asarray(true_labels)
+        if self.num_labels is not None:
+            self.conf_matrix[p_labels, t_labels] += 1
         correct = float(np.sum((p_arcs == t_arcs) & (p_labels == t_labels)))
         self.count += len(p_arcs)
         self.cumsum += correct
