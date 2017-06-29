@@ -2,6 +2,7 @@ import os
 import six
 import numpy as np
 import yaml
+import json
 import datetime
 from johnny import EXP_ENV_VAR
 
@@ -151,12 +152,13 @@ class Experiment(object):
 
     MODEL_SUFFIX = '.model'
     VOCAB_SUFFIX = '.vocab'
-    DATE_FORMAT = '%m-%d-%Y %H:%M:%S'
+    DATE_FORMAT = '%d-%m-%Y %H:%M:%S'
 
-    def __init__(self, name, lang, **kwargs):
+    def __init__(self, name, lang, model, **kwargs):
         self.name = name
         self.lang = lang
-        self.train_timeline = []
+        self.model = model
+        self.results = dict(train_timeline=[])
         self.timestamp = datetime.datetime.strftime(datetime.datetime.now(),
                                                     self.DATE_FORMAT)
         for k, v in kwargs.items():
@@ -166,7 +168,10 @@ class Experiment(object):
         return self.to_yaml()
 
     def add_train_entry(self, **kwargs):
-        self.train_timeline.append(dict(**kwargs))
+        self.results['train_timeline'].append(dict(**kwargs))
+
+    def set_test_results(self, results):
+        self.results['test_results'] = results
 
     def to_yaml(self):
         return yaml.dump(self.__dict__, default_flow_style=False)

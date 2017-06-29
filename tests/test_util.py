@@ -208,13 +208,13 @@ def test_right_leak_right_one():
 
 def test_experiment_to_and_from_yaml(tmpdir):
     p = str(tmpdir.mkdir('exps'))
-    e = Experiment('test', lang='English', exp_folder_path=p, model_params={'lr': 0.5, 'lstm_units': 100})
+    e = Experiment('test', lang='English', model={'lr': 0.5, 'lstm_units': 100}, exp_folder_path=p)
     yml = e.to_yaml()
     assert(yml == Experiment.from_yaml(e.to_yaml()).to_yaml())
 
 def test_experiment_load_save(tmpdir):
     p = str(tmpdir.mkdir('exps'))
-    e = Experiment('test', lang='English', exp_folder_path=p, model_params={'lr': 0.5, 'lstm_units': 100})
+    e = Experiment('test', lang='English', model={'lr': 0.5, 'lstm_units': 100}, exp_folder_path=p)
     e.save(exp_folder_path=p)
     yml = e.to_yaml()
     e2 = Experiment.load(e.filepath)
@@ -223,15 +223,15 @@ def test_experiment_load_save(tmpdir):
 def test_experiment_check_os_environ(tmpdir):
     p = str(tmpdir.mkdir('exps'))
     os.environ[EXP_ENV_VAR] = p
-    e = Experiment('test', lang='English', model_params={'lr': 0.5, 'lstm_units': 100})
+    e = Experiment('test', lang='English', model={'lr': 0.5, 'lstm_units': 100})
     e.save()
     os.environ[EXP_ENV_VAR] = ''
     with pytest.raises(ValueError):
-        e = Experiment('test', lang='English', model_params={'lr': 0.5, 'lstm_units': 100})
+        e = Experiment('test', lang='English', model={'lr': 0.5, 'lstm_units': 100})
         e.save()
 
 def test_experiment_non_existant_file(tmpdir):
     os.environ[EXP_ENV_VAR] = 'gobbledygook'
     with pytest.raises(ValueError):
-        e = Experiment('test', lang='English', model_params={'lr': 0.5, 'lstm_units': 100})
+        e = Experiment('test', lang='English', model={'lr': 0.5, 'lstm_units': 100})
         e.save()

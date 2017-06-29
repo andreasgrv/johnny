@@ -31,9 +31,10 @@ def py2repr(f):
 
 class Dataset(object):
 
-    def __init__(self, sents, lang=None):
+    def __init__(self, sents, lang=None, name=None):
         self.sents = sents
         self.lang = lang
+        self.name = name
 
     def __getitem__(self, index):
         return self.sents[index]
@@ -287,6 +288,8 @@ class UDepLoader(object):
             train_filename = train_filename[0]
             train_path = os.path.join(p, train_filename)
             dataset = self.load_conllu(train_path) 
+            dataset.lang = lang
+            dataset.name = os.path.basename(self.datafolder)
             if verbose:
                 print('Loaded %d sentences from %s' % (len(dataset), train_path))
             return dataset
@@ -302,6 +305,8 @@ class UDepLoader(object):
             dev_filename = dev_filename[0]
             dev_path = os.path.join(p, dev_filename)
             dataset = self.load_conllu(dev_path) 
+            dataset.lang = lang
+            dataset.name = os.path.basename(self.datafolder)
             if verbose:
                 print('Loaded %d sentences from %s' % (len(dataset), dev_path))
             return dataset
