@@ -16,7 +16,7 @@ from johnny.extern import DependencyDecoder
 # TODO Check constraint algorithms + optimise
 # TODO Maybe switch to using predicted arcs towards end of training
 # TODO Think of ways of avoiding self prediction
-class Dense(chainer.Chain):
+class GraphParser(chainer.Chain):
 
     MIN_PAD = -100.
     TREE_OPTS = ['none', 'chu', 'eisner']
@@ -32,7 +32,7 @@ class Dense(chainer.Chain):
                  debug=False
                  ):
 
-        super(Dense, self).__init__()
+        super(GraphParser, self).__init__()
         self.num_labels = num_labels
         self.mlp_arc_units = mlp_arc_units
         self.mlp_lbl_units = mlp_lbl_units

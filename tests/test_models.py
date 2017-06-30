@@ -1,7 +1,7 @@
 import pytest
 import chainer
 import numpy as np
-from johnny.models import Dense
+from johnny.models import GraphParser
 from johnny.components import Embedder, Encoder
 from chainer import optimizers
 
@@ -12,7 +12,7 @@ def simple_word_model():
     np.random.seed(SEED)
     embed = Embedder((10,), (10,), dropout=0.)
     encoder = Encoder(embed, lstm_units=8, dropout=0.)
-    model = Dense(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
+    model = GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
     return model
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def simple_pos_model():
     np.random.seed(SEED)
     embed = Embedder((10, 10), (10, 10), dropout=0.)
     encoder = Encoder(embed, lstm_units=8, dropout=0.)
-    model = Dense(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
+    model = GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
     return model
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def dropout_pos_model():
         np.random.seed(SEED)
         embed = Embedder((10, 10), (10, 10), dropout=0.2)
         encoder = Encoder(embed, lstm_units=8, dropout=0.2)
-        return Dense(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
+        return GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
     return instance
 
 def test_pred_dimensionality_basic(simple_word_model):
