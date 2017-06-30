@@ -7,6 +7,7 @@ from time import sleep
 from chainer import Variable, cuda
 from johnny.utils import bar, discrete_print
 from johnny.dep import UDepVocab
+from johnny.components import Embedder
 from johnny.extern import DependencyDecoder
 
 
@@ -23,15 +24,11 @@ class Dense(chainer.Chain):
     TREE_OPTS = ['none', 'chu', 'eisner']
 
     def __init__(self,
-                 vocab_size=10000,
-                 pos_size=30,
+                 embedder,
                  num_labels=46,
-                 pos_units=30,
-                 word_units=100,
                  lstm_units=100,
                  num_lstm_layers=1,
                  use_bilstm=True,
-                 dropout_inp=0.1,
                  dropout_rec=0.5,
                  mlp_arc_units=100,
                  mlp_lbl_units=100,
@@ -42,15 +39,10 @@ class Dense(chainer.Chain):
                  ):
 
         super(Dense, self).__init__()
-        self.vocab_size = vocab_size
-        self.pos_size = pos_size
         self.num_labels = num_labels
-        self.pos_units = pos_units
-        self.word_units = word_units
         self.lstm_units = lstm_units
         self.num_lstm_layers = num_lstm_layers
         self.use_bilstm = use_bilstm
-        self.dropout_inp = dropout_inp
         self.dropout_rec = dropout_rec
         self.mlp_arc_units = mlp_arc_units
         self.mlp_lbl_units = mlp_lbl_units
@@ -63,32 +55,31 @@ class Dense(chainer.Chain):
         assert(treeify in self.TREE_OPTS)
         self.unit_mult = 2 if self.use_bilstm else 1
 
-        self.add_link('embed_word', L.EmbedID(self.vocab_size, self.word_units,
-            ignore_label=self.CHAINER_IGNORE_LABEL))
-        self.add_link('embed_pos', L.EmbedID(self.pos_size, self.pos_units,
-            ignore_label=self.CHAINER_IGNORE_LABEL))
-        self.f_lstm, self.b_lstm = [], []
-        for i in range(self.num_lstm_layers):
-            # if this is the first lstm layer we need to have same number of
-            # units as pos_units + word_units - else we use lstm_units num units
-            in_size = pos_units + word_units if i == 0 else lstm_units
-            f_name = 'f_lstm_%d' % i
-            self.f_lstm.append(f_name)
-            self.add_link(f_name, L.LSTM(in_size, lstm_units))
-            if self.use_bilstm:
-                b_name = 'b_lstm_%d' % i
-                self.b_lstm.append(b_name)
-                self.add_link(b_name, L.LSTM(in_size, lstm_units))
+        with self.init_scope():
+            self.embedder = embedder
 
-        self.add_link('vT', L.Linear(mlp_arc_units, 1))
-        # head
-        self.add_link('H_arc', L.Linear(self.unit_mult*lstm_units, mlp_arc_units))
-        # dependent
-        self.add_link('D_arc', L.Linear(self.unit_mult*lstm_units, mlp_arc_units))
+            self.f_lstm, self.b_lstm = [], []
+            for i in range(self.num_lstm_layers):
+                # if this is the first lstm layer we need to have same number of
+                # units as pos_units + word_units - else we use lstm_units num units
+                in_size = embedder.out_size if i == 0 else lstm_units
+                f_name = 'f_lstm_%d' % i
+                self.f_lstm.append(f_name)
+                setattr(self, f_name, L.LSTM(in_size, lstm_units))
+                if self.use_bilstm:
+                    b_name = 'b_lstm_%d' % i
+                    self.b_lstm.append(b_name)
+                    setattr(self, b_name, L.LSTM(in_size, lstm_units))
 
-        self.add_link('V_lblT', L.Linear(mlp_lbl_units, self.num_labels))
-        self.add_link('U_lbl', L.Linear(self.unit_mult*lstm_units, mlp_lbl_units))
-        self.add_link('W_lbl', L.Linear(self.unit_mult*lstm_units, mlp_lbl_units))
+            self.vT = L.Linear(mlp_arc_units, 1)
+            # head
+            self.H_arc = L.Linear(self.unit_mult*lstm_units, mlp_arc_units)
+            # dependent
+            self.D_arc = L.Linear(self.unit_mult*lstm_units, mlp_arc_units)
+
+            self.V_lblT = L.Linear(mlp_lbl_units, self.num_labels)
+            self.U_lbl = L.Linear(self.unit_mult*lstm_units, mlp_lbl_units)
+            self.W_lbl = L.Linear(self.unit_mult*lstm_units, mlp_lbl_units)
 
     def _pad_batch(self, seqs):
         """Pads list of sequences of different length to max
@@ -112,12 +103,11 @@ class Dense(chainer.Chain):
             cuda.to_gpu(batch, self.gpu_id)
         return batch
 
-    def _feed_lstms(self, lstm_layers, sents, tags, boundaries):
+    def _feed_lstms(self, lstm_layers, boundaries, *seqs):
         """Pass batches of data through the lstm layers
         and generate the sentence embeddings for each
         sentence in the batch"""
-        # words and tags should have same length
-        assert(len(sents) == len(tags))
+        sents = seqs[0]
         max_sent_len = len(sents)
         batch_size = len(sents[0])
         # we will reshape top lstm layer output to below shape
@@ -129,13 +119,12 @@ class Dense(chainer.Chain):
             # needed to pad because otherwise can't move whole batch to gpu
             active_until = boundaries[i]
 
-            words = Variable(sents[i][:active_until])
-            pos = Variable(tags[i][:active_until])
-            word_emb = self.embed_word(words)
-            pos_emb = self.embed_pos(pos)
-            act = F.concat((word_emb, pos_emb), axis=1)
-            if self.dropout_inp > 0:
-                act = F.dropout(act, ratio=self.dropout_inp)
+            # embedder computes activation by embedding each input sequence and
+            # concatenating the resulting vectors to a single vector per
+            # index in the sentence. We don't embed the -1 ids since we only
+            # process up to :active_until - this comes up because in a single
+            # batch we may have different sentence lengths.
+            act = self.embedder(*(Variable(seq[i][:active_until]) for seq in seqs))
 
             for layer in lstm_layers:
                 act = self[layer](act)
@@ -148,41 +137,39 @@ class Dense(chainer.Chain):
         return F.concat(states, axis=1)
 
 
-    def _encode_sents(self, f_sents, f_tags):
+    def _encode_sequences(self, *in_seqs):
         """Creates lstm embedding of the sentence and pos tags.
         If use_bilstm is specified - the embedding is formed from
         concatenating the forward and backward activations
         corresponding to each word.
         """
 
-        sent_lengths = [len(sent) for sent in f_sents]
+        # all sequences in in_seqs are assumed to have length corresponding
+        # to in_seqs[0]
+        sent_lengths = [len(sent) for sent in in_seqs[0]]
         max_sent_len = sent_lengths[0]
 
-        if self.use_bilstm:
-            # also create the sentence in reverse order for the bilstm
-            b_sents, b_tags = [sent[::-1] for sent in f_sents], [tags[::-1] for tags in f_tags]
-            b_sents = self._pad_batch(b_sents)
-            b_tags = self._pad_batch(b_tags)
-
-        # mask batches for use in lstm
         # f_sents is sentence_length x batch_size - f_sents[0] contains the first token from
         # all sentences in the batch
-        f_sents = self._pad_batch(f_sents)
-        f_tags = self._pad_batch(f_tags)
+        fwd = [self._pad_batch(seq) for seq in in_seqs]
 
+        if self.use_bilstm:
+            # backward - also create the sentence in reverse order for the bilstm
+            bwd = [self._pad_batch([sent[::-1] for sent in seq]) for seq in in_seqs]
 
+        # mask batches for use in lstm
         # mask needed because sentences aren't all the same length
         # mask is batch_size x sentence_length
-        mask = (f_sents != self.CHAINER_IGNORE_LABEL).T
+        mask = (fwd[0] != self.CHAINER_IGNORE_LABEL).T
 
         col_lengths = self.xp.sum(mask, axis=0)
         # total_tokens = self.xp.sum(col_lengths)
         # feed lists of words into forward and backward lstms
         # each list is a column of words if we imagine the sentence of each batch
         # concatenated vertically
-        joint_f_states = self._feed_lstms(self.f_lstm, f_sents, f_tags, col_lengths)
+        joint_f_states = self._feed_lstms(self.f_lstm, col_lengths, *fwd)
         if self.use_bilstm:
-            joint_b_states = self._feed_lstms(self.b_lstm, b_sents, b_tags, col_lengths)
+            joint_b_states = self._feed_lstms(self.b_lstm, col_lengths, *bwd)
             # need to shift activations because of sentence length difference
             # ------------------------- EXPLANATION -------------------------
             # assume rows are batches of sentences - and each number a vector
@@ -327,7 +314,7 @@ class Dense(chainer.Chain):
         lbls = F.concat(sent_lbls, axis=2)
         return lbls
 
-    def __call__(self, s_words, s_pos, heads=None, labels=None):
+    def __call__(self, *inputs, **kwargs):
         """ Expects a batch of sentences 
         so a list of K sentences where each sentence
         is a 2-tuple of indices of words, indices of pos tags.
@@ -341,8 +328,14 @@ class Dense(chainer.Chain):
         This is as slow as the longest sentence - so bucketing sentences
         of same size can speed up training - prediction.
         """
+        assert(len(inputs) >= 1)
+        heads = kwargs.get('heads', None)
+        labels = kwargs.get('labels', None)
+        # print(np.all(self.embedder.embed_0.W.data == self.embed_word.W.data))
+        # print(np.all(self.embedder.embed_1.W.data == self.embed_pos.W.data))
+
         calc_loss = ((heads is not None) and (labels is not None))
-        input_sent_lengths = [len(sent) - 1 for sent in s_words]
+        input_sent_lengths = [len(sent) - 1 for sent in inputs[0]]
         # in order to process batches of different sized sentences using LSTM in chainer
         # we need to sort by sentence length.
         # The longest sentences in tokens need to be at the beginning of the
@@ -350,25 +343,22 @@ class Dense(chainer.Chain):
         # to the smallest sentences that have 'run out of tokens'.
         # We keep the permutation indices in order to reshuffle the output states,
         # since we want to map the activations to the inputs.
+        perm_indices, sorted_batch = zip(*sorted(enumerate(zip(*inputs)),
+                                                 key=lambda x: len(x[1][0]),
+                                                 reverse=True))
+        sorted_inputs = list(zip(*sorted_batch))
         if calc_loss:
-            perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos, heads, labels)),
-                                                     key=lambda x: len(x[1][0]),
-                                                     reverse=True))
-            f_sents, f_tags, sorted_heads, sorted_labels = zip(*sorted_batch)
+            sorted_heads = [heads[i] for i in perm_indices]
+            sorted_labels = [labels[i] for i in perm_indices]
         else:
-            perm_indices, sorted_batch = zip(*sorted(enumerate(zip(s_words, s_pos)),
-                                                     key=lambda x: len(x[1][0]),
-                                                     reverse=True))
-            f_sents, f_tags = zip(*sorted_batch)
-            sorted_heads = None
-            sorted_labels = None
-        assert(len(f_sents) == len(s_words))
+            sorted_heads, sorted_labels = None, None
 
+        f_sents = sorted_inputs[0]
         batch_size = len(f_sents)
         max_sent_len = len(f_sents[0])
 
         # comb states is batch_size x sentence_length x lstm_units
-        comb_states, mask, col_lengths = self._encode_sents(f_sents, f_tags)
+        comb_states, mask, col_lengths = self._encode_sequences(*sorted_inputs)
         # In order to predict which head is most probable for a given word
         # P(w_j == head | w_i, S)  -- note for our purposes w_j is the variable
         # we compute: g(a_j, a_i) = vT * tanh(U * a_j + V * a_i)
