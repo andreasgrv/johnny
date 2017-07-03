@@ -334,8 +334,7 @@ class Vocab(object):
     have stocks in any companies producing ram chips.
     """
 
-    special = dict(UNK=0) # , START=1, END=2)
-    # special = dict(UNK=0, START=1, END=2)
+    special = dict(UNK=0, START=1, END=2)
     reserved = namedtuple('Reserved', special.keys())(**special)
 
     def __init__(self, size=None, out_size=None, counts=None, threshold=0):
@@ -401,11 +400,16 @@ class Vocab(object):
         for key in remove:
             self.counts.pop(key)
 
-    def encode(self, tokens):
+    def encode(self, tokens, with_start=False, with_end=False):
         """tokens: iterable of tokens to get indices for.
         returns list of indices.
         """
-        return tuple(self.index.get(token, self.reserved.UNK) for token in tokens)
+        # We may insert START and END tokens before and after the
+        # encoded sequence according to passed params
+        return (((self.reserved.START,) if with_start else ()) +
+                tuple(self.index.get(token, self.reserved.UNK)
+                      for token in tokens) +
+                ((self.reserved.END,) if with_end else ()))
 
     def save(self, filepath):
         with open(filepath, 'wb') as f:
