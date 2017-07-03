@@ -27,7 +27,6 @@ class GraphParser(chainer.Chain):
                  mlp_arc_units=100,
                  mlp_lbl_units=100,
                  treeify='chu',
-                 gpu_id=-1,
                  visualise=False,
                  debug=False
                  ):
@@ -37,7 +36,6 @@ class GraphParser(chainer.Chain):
         self.mlp_arc_units = mlp_arc_units
         self.mlp_lbl_units = mlp_lbl_units
         self.treeify = treeify.lower()
-        self.gpu_id = gpu_id
         self.visualise = visualise
         self.debug = debug
         self.sleep_time = 0
@@ -91,16 +89,20 @@ class GraphParser(chainer.Chain):
                 # i-1 because sentence has root appended to beginning
                 gold_heads = Variable(sorted_heads[i-1])
             # ================== HEAD PREDICTION ======================
-            # Because some sentences may be shorter - only num_active of the
-            # batch have valid activations for this token.
-            # We need to replace the invalid ones with zeros - because
+            # NOTE Because some sentences may be shorter - only num_active of
+            # the batch have valid activations for this token. If in softmax
+            # we didn't limit arcs to [:num_active] we would need to replace
+            # embeddings that are out of sentence range with zeros - because
             # otherwise when broadcasting and summing we will modify valid
             # batch activations for earlier tokens of the sentence.
-            invalid_pad = ((0, int(batch_size - num_active)), (0, 0))
-            d_arc_pad = F.pad(d_arc[i][:num_active], invalid_pad, 'constant', constant_values=0.)
+            # ====================== Code for padding ==========================
+            # invalid_pad = ((0, int(batch_size - num_active)), (0, 0))
+            # d_arc_pad = F.pad(d_arc[i][:num_active],
+            #                   invalid_pad, 'constant', constant_values=0.)
+            # ==================================================================
             # We broadcast w_arc[i] to the size of u_as since we want to add
             # the activation of a_i to all different activations a_j
-            a_u, a_w = F.broadcast(h_arc, d_arc_pad)
+            a_u, a_w = F.broadcast(h_arc, d_arc[i])
             # compute U * a_j + V * a_i for all j and this loops i
             comb_arc = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
             # compute g(a_j, a_i)
@@ -111,6 +113,9 @@ class GraphParser(chainer.Chain):
             if calc_loss:
                 # we don't want to average out over seen words yet
                 # NOTE: do not use ignore_label - in gpu mode gold_heads gets mutated
+                # and furthermore we would need to have padded invalid state of
+                # d_arc[i] with zeros before broadcasting. 
+                # see NOTE above
                 head_loss = F.sum(F.softmax_cross_entropy(arcs[:num_active], gold_heads[:num_active], reduce='no'))
                 self.loss += head_loss
             sent_arcs.append(F.reshape(arcs, (batch_size, -1, 1)))
@@ -124,7 +129,7 @@ class GraphParser(chainer.Chain):
 
         calc_loss = sorted_labels is not None
         if calc_loss:
-            labels = self.encoder._pad_batch(sorted_labels)
+            labels = self.encoder.pad_batch(sorted_labels)
 
         u_lbl = self.U_lbl(sent_states)
         u_lbl = F.swapaxes(F.reshape(u_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
@@ -225,7 +230,7 @@ class GraphParser(chainer.Chain):
         self.loss = 0
 
         if calc_loss:
-            sorted_heads = self.encoder._pad_batch(sorted_heads)
+            sorted_heads = self.encoder.pad_batch(sorted_heads)
 
         batch_stats = (batch_size, max_sent_len, self.encoder.col_lengths)
 
@@ -250,7 +255,7 @@ class GraphParser(chainer.Chain):
                 arc_preds = np.array([dd.parse_proj(each)[1:] for each in pd_arcs])
             else:
                 raise ValueError('Unexpected method')
-            p_arcs = self.encoder._pad_batch(arc_preds)
+            p_arcs = self.encoder.pad_batch(arc_preds)
         else:
             # We ignore tree constraints - head predictions may create cycles
             # we pass predict_labels the gpu object
