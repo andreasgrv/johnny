@@ -5,7 +5,7 @@ import json
 import re
 import pickle
 import numpy as np
-from collections import Counter
+from collections import Counter, namedtuple
 from itertools import chain
 from johnny import DATA_ENV_VAR
 
@@ -58,31 +58,31 @@ class Dataset(object):
 
     @property
     def words(self):
-        return [s.words for s in self.sents]
+        return tuple(s.words for s in self.sents)
 
     @property
     def heads(self):
-        return [s.heads for s in self.sents]
+        return tuple(s.heads for s in self.sents)
 
     @property
     def arctags(self):
-        return [s.arctags for s in self.sents]
+        return tuple(s.arctags for s in self.sents)
 
     @property
     def upostags(self):
-        return [s.upostags for s in self.sents]
+        return tuple(s.upostags for s in self.sents)
 
     @property
     def xpostags(self):
-        return [s.xpostags for s in self.sents]
+        return tuple(s.xpostags for s in self.sents)
 
     @property
     def sent_lengths(self):
-        return [len(sent) for sent in self.sents]
+        return tuple(len(sent) for sent in self.sents)
 
     @property
     def arc_lengths(self):
-        return list(chain(*[sent.arc_lengths for sent in self.sents]))
+        return tuple(chain(*[sent.arc_lengths for sent in self.sents]))
 
     @property
     def len_stats(self):
@@ -123,7 +123,7 @@ class Sentence(object):
         # we are using this for dependency parsing
         # we don't care about multiword tokens or
         # repetition of words that won't be reflected in the sentence
-        self.tokens = [token for token in tokens if token.head != -1] or []
+        self.tokens = tuple(token for token in tokens if token.head != -1) or tuple()
 
     def __getitem__(self, index):
         return self.tokens[index]
@@ -162,11 +162,11 @@ class Sentence(object):
 
     @property
     def heads(self):
-        return [t.head for t in self.tokens]
+        return tuple(t.head for t in self.tokens)
 
     @property
     def arctags(self):
-        return [t.deprel.split(':')[0] for t in self.tokens]
+        return tuple(t.deprel.split(':')[0] for t in self.tokens)
 
     @property
     def upostags(self):
@@ -183,7 +183,7 @@ class Sentence(object):
     @property
     def arc_lengths(self):
         """Compute how long the arcs are in words"""
-        return [abs(head - index) if head != 0 else 1 for index, head in enumerate(self.heads, 1)]
+        return tuple(abs(head - index) if head != 0 else 1 for index, head in enumerate(self.heads, 1))
 
 
 @six.python_2_unicode_compatible
@@ -334,13 +334,14 @@ class Vocab(object):
     have stocks in any companies producing ram chips.
     """
 
-    UNK = 0
+    special = dict(UNK=0, START=1, END=2)
+    reserved = namedtuple('Reserved', special.keys())(**special)
 
-    def __init__(self, size, counts=None, threshold=0):
+    def __init__(self, size=None, out_size=None, counts=None, threshold=0):
         """
-            size: int - the number of tokens we can represent - also the
-            size of the index. We also represent UNK but that is not accounted
-            for in size (we don't store UNK in the index).
+            size: int - the number of tokens we can represent.
+            We always represent UNK, START and END but we don't count
+            them in len. Use out_size attribute for that.
 
             counts: a dictionary of token, counts to initialise the vocab
             with.
@@ -349,8 +350,17 @@ class Vocab(object):
             this many counts.
         """
         super(Vocab, self).__init__()
+        if size is None:
+            assert(out_size is not None)
+            self.size = out_size - len(self.reserved)
+            self.out_size = out_size
+        elif out_size is None:
+            assert(size is not None)
+            self.out_size = size + len(self.reserved)
+            self.size = size
+        else:
+            raise ValueError("Can't set both size and out_size")
         self.counts = counts or dict()
-        self.size = size
         self.threshold = threshold
         self.index = None
         self._threshold_counts()
@@ -361,7 +371,7 @@ class Vocab(object):
                 % (self.size, len(self), self.threshold))
 
     def __len__(self):
-        return len(self.index) # we don't store UNK so that is not in the count
+        return len(self.index)
 
     def __getitem__(self, key):
         return self.index[key]
@@ -372,12 +382,13 @@ class Vocab(object):
         # when the code runs again. #fun_debugging
         candidates = sorted(self.counts.most_common(),
                             key=lambda x: (x[1], x[0]), reverse=True)
-        limit = self.size - 1 if self.size > 0 else 0
+        limit = self.size
+        offset = len(self.reserved)
         # we leave the 0 index to represent the UNK
         keep = candidates[:limit]
         if keep:
             keys, _ = zip(*keep)
-            self.index = dict(zip(keys, range(1, len(keys)+1)))
+            self.index = dict(zip(keys, range(offset, len(keys)+offset)))
         else:
             self.index = dict()
 
@@ -389,11 +400,16 @@ class Vocab(object):
         for key in remove:
             self.counts.pop(key)
 
-    def encode(self, tokens):
+    def encode(self, tokens, with_start=False, with_end=False):
         """tokens: iterable of tokens to get indices for.
         returns list of indices.
         """
-        return [self.index.get(token, self.UNK) for token in tokens]
+        # We may insert START and END tokens before and after the
+        # encoded sequence according to passed params
+        return (((self.reserved.START,) if with_start else ()) +
+                tuple(self.index.get(token, self.reserved.UNK)
+                      for token in tokens) +
+                ((self.reserved.END,) if with_end else ()))
 
     def save(self, filepath):
         with open(filepath, 'wb') as f:
@@ -405,9 +421,9 @@ class Vocab(object):
             return pickle.load(f)
 
     @classmethod
-    def from_token_list(cl, tokens, size, threshold=0):
+    def from_token_list(cl, tokens, size=None, out_size=None, threshold=0):
         c = Counter(tokens)
-        return cl(size, counts=c, threshold=threshold)
+        return cl(counts=c, size=size, out_size=out_size, threshold=threshold)
 
 
 class UPOSVocab(object):
@@ -439,7 +455,7 @@ class UPOSVocab(object):
     def __init__(self):
         super(UPOSVocab, self).__init__()
         self.tags = self.TAGS + [ROOT_REPR]
-        self.index = dict([(key, index) for index, key in enumerate(self.tags)])
+        self.index = dict((key, index) for index, key in enumerate(self.tags))
 
     def __repr__(self):
         return ('UPOSVocab object\nnum tags: %d\n' % (len(self), self.use_unk))
@@ -452,7 +468,7 @@ class UPOSVocab(object):
 
     def encode(self, tags):
         """tags : iterable of tags """
-        return [self.index[tag] for tag in tags]
+        return tuple(self.index[tag] for tag in tags)
 
 
 class UDepVocab(object):
@@ -507,7 +523,7 @@ class UDepVocab(object):
     def __init__(self):
         super(UDepVocab, self).__init__()
         self.tags = self.TAGS
-        self.index = dict([(key, index) for index, key in enumerate(self.tags)])
+        self.index = dict((key, index) for index, key in enumerate(self.tags))
 
     def __repr__(self):
         return ('UDepVocab object\nnum tags: %d' % (len(self), self.use_unk))
@@ -520,4 +536,4 @@ class UDepVocab(object):
 
     def encode(self, tags):
         """tags : iterable of tags """
-        return [self.index[tag] for tag in tags]
+        return tuple(self.index[tag] for tag in tags)
