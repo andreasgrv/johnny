@@ -49,15 +49,19 @@ class Embedder(chainer.Chain):
 
 class SubwordEmbedder(chainer.Chain):
 
-    def __init__(self, word_encoder, in_sizes, out_sizes, dropout=0.2):
+    def __init__(self, word_encoder, in_sizes=None, out_sizes=None, dropout=0.2):
+        self.in_sizes = in_sizes or []
+        self.out_sizes = out_sizes or []
         super(SubwordEmbedder, self).__init__()
         with self.init_scope():
             self.word_encoder = word_encoder
-            for index, (in_size, out_size) in enumerate(zip(in_sizes, out_sizes), 1):
+            for index, (in_size, out_size) in enumerate(zip(self.in_sizes, self.out_sizes), 1):
                 embed_layer = L.EmbedID(in_size, out_size, ignore_label=-1)
                 self.set_embed(index, embed_layer)
         self.dropout = dropout
-        self.out_size = self.word_encoder.out_size + sum(out_sizes)
+        self.out_size = self.word_encoder.out_size
+        if out_sizes:
+            self.out_size += sum(out_sizes)
         self.is_subword = True
 
     def get_embed(self, index):
@@ -109,14 +113,6 @@ class Encoder(chainer.Chain):
         self.mask = None
         self.col_lengths = None
 
-    # def pad_subword(self, seqs):
-    #     """Input is 3D - sentences x words x subword_tokens
-    #     
-    #     :returns: 1D padded array of all words as subword_token sequences
-    #     """
-    #     max_len = 0
-
-
     def pad_batch(self, seqs):
         """Pads list of sequences of different length to max
         seq length - we can't send a list of sequences of
@@ -136,8 +132,6 @@ class Encoder(chainer.Chain):
                                 for sent in seqs]
                                for i in range(self.max_seq_len)],
                               dtype=self.xp.int32)
-        if self.gpu_id >= 0:
-            chainer.cuda.to_gpu(batch, self.gpu_id)
         return batch
 
     def _feed_lstms(self, lstm_layers, *seqs):
@@ -199,7 +193,7 @@ class Encoder(chainer.Chain):
             word_encoder = self.embedder.word_encoder
             word_encoder.encode_words(word_set)
             # replace 3D input with 2D - words replaced with hash
-            in_seqs[0] = tuple(tuple(map(word_encoder.hash_word, s)) for s in sents)
+            in_seqs[0] = tuple(tuple(map(word_encoder.word_to_index, s)) for s in sents)
 
         # f_sents is sentence_length x batch_size - f_sents[0] contains
         # the first token from all sentences in the batch
@@ -299,7 +293,8 @@ class SubwordEncoder(chainer.Chain):
         self.cache = dict()
 
     def __call__(self, batch):
-        return F.vstack([self.cache[word] for word in batch.data])
+        return self.embedding[batch.data]
+        # return F.vstack([self.cache[word] for word in batch.data])
 
     def encode_words(self, word_list):
         # reset state at each batch
@@ -313,36 +308,38 @@ class SubwordEncoder(chainer.Chain):
             rev_wl = [word[::-1] for word in sorted_wl]
 
         for i in range(max_word_len):
-            c = chainer.Variable(self.xp.array([word[i] for word in sorted_wl if i < len(word)],
-                         dtype=self.xp.int32))
+            c_v = self.xp.array([word[i] for word in sorted_wl if i < len(word)], dtype=self.xp.int32)
+            # c_v = chainer.cuda.to_gpu(c_v)
+            c = chainer.Variable(c_v)
             self.encode(c, self.f_lstm)
             if self.use_bilstm:
-                rev_c = chainer.Variable(self.xp.array([word[i] for word in rev_wl if i < len(word)],
-                                 dtype=self.xp.int32))
+                rev_c_v = self.xp.array([word[i] for word in rev_wl if i < len(word)], dtype=self.xp.int32)
+                # rev_c_v = chainer.cuda.to_gpu(rev_c_v)
+                rev_c = chainer.Variable(rev_c_v)
                 self.encode(rev_c, self.b_lstm)
 
         # concatenate forward and backward encoding
         if self.use_bilstm:
-            embedding = F.concat((self[self.f_lstm[-1]].h, self[self.b_lstm[-1]].h))
+            self.embedding = F.concat((self[self.f_lstm[-1]].h, self[self.b_lstm[-1]].h))
         else:
-            embedding = self[self.f_lstm[-1]].h
-        # embedding = self.out_fwd(self[self.lstm_fwd[-1]].h) + self.out_bwd(self[self.lstm_rev[-1]].h)
-        # reverse permutation done to pass through lstm
+            self.embedding = self[self.f_lstm[-1]].h
         for i, word in enumerate(sorted_wl):
-            self.cache[self.hash_word(word)] = F.reshape(embedding[i], shape=(1, -1))
+            self.cache[tuple(word)] = i# F.reshape(embedding[i], shape=(1, -1))
+    #
+    # def hash_word(self, word):
+    #     """We want to avoid having to pad subword tokens on the input,
+    #     so instead we replace the word with a hash of the subword tokens.
+    #     We only pass the subword tokens to the encode_words function as a
+    #     2D list : words x subword tokens. This way we don't have to worry
+    #     about 3D input to the sentence encoder at a higher level
+    #     (sentences x words x subword tokens -> sentences x word_hashes)
+    #     """
+    #     # we assume words are some sort of iterable of subword tokens.
+    #     # if they are not tuples, we convert to tuple for hashing.
+    #     return hash(word) if isinstance(word, tuple) else hash(tuple(word))
 
-    def hash_word(self, word):
-        """We want to avoid having to pad subword tokens on the input,
-        so instead we replace the word with a hash of the subword tokens.
-        We only pass the subword tokens to the encode_words function as a
-        2D list : words x subword tokens. This way we don't have to worry
-        about 3D input to the sentence encoder at a higher level
-        (sentences x words x subword tokens -> sentences x word_hashes)
-        """
-        # we assume words are some sort of iterable of subword tokens.
-        # if they are not tuples, we convert to tuple for hashing.
-        temp_fix = 1e7
-        return hash(word) % temp_fix if isinstance(word, tuple) else hash(tuple(word)) % temp_fix
+    def word_to_index(self, word):
+        return self.cache[tuple(word)]
 
     def encode(self, char, lstm_layer_list):
         # get embedding + dropout
