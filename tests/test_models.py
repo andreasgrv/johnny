@@ -73,7 +73,6 @@ def test_can_predict_correct(simple_word_model):
         loss = new_loss
         simple_word_model.cleargrads()
         simple_word_model.loss.backward()
-        simple_word_model.reset_state()
         # update parameters
         opt.update()
     assert([h.tolist() for h in r] == oh_heads)
@@ -128,7 +127,6 @@ def test_batching_same_size(simple_pos_model):
     batch_arcs = r
     oh_words = [[9,2,1]]
     oh_pos = [[9,1,3]]
-    simple_pos_model.reset_state()
     with chainer.using_config('train', False):
         r, l = simple_pos_model(oh_words, oh_pos)
     single_arcs = r
@@ -143,7 +141,6 @@ def test_batching_diff_size(simple_pos_model):
     batch_arcs = simple_pos_model.arcs
     oh_words = [[9,1,2]]
     oh_pos = [[9,5,6]]
-    simple_pos_model.reset_state()
     with chainer.using_config('train', False):
         r, l = simple_pos_model(oh_words, oh_pos)
     single_arcs = simple_pos_model.arcs
@@ -158,9 +155,7 @@ def test_batched_preds_equal_non_batched_preds(simple_pos_model):
     with chainer.using_config('train', False):
 
         b_preds, l_p = simple_pos_model(oh_words, oh_pos)
-        simple_pos_model.reset_state()
 
         for i, (w, p) in enumerate(zip(oh_words, oh_pos)):
             pred, l = simple_pos_model([w], [p])
-            simple_pos_model.reset_state()
             assert(np.allclose(pred, b_preds[i]))
