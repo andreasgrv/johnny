@@ -68,11 +68,11 @@ class GraphParser(chainer.Chain):
         h_arc = self.H_arc(sent_states)
         # we transform results to be indexable by sentence index for upcoming for loop
         # h_arc is now max_sent x bs x mlp_arc_units
-        h_arc = F.swapaxes(F.reshape(h_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
+        h_arc = F.reshape(h_arc, (-1, batch_size, self.mlp_arc_units))
         # bs * max_sent x mlp_arc_units
         d_arc = self.D_arc(sent_states)
         # max_sent x bs x mlp_arc_units
-        d_arc = F.swapaxes(F.reshape(d_arc, (batch_size, -1, self.mlp_arc_units)), 0, 1)
+        d_arc = F.reshape(d_arc, (-1, batch_size, self.mlp_arc_units))
 
         # the values to use to mask softmax for head prediction
         # e ^ -100 is ~ zero (can be changed from self.MIN_PAD)
@@ -87,7 +87,7 @@ class GraphParser(chainer.Chain):
             # if we are calculating loss create truth variables
             if calc_loss:
                 # i-1 because sentence has root appended to beginning
-                gold_heads = Variable(sorted_heads[i-1])
+                gold_heads = sorted_heads[i-1]
             # ================== HEAD PREDICTION ======================
             # NOTE Because some sentences may be shorter - only num_active of
             # the batch have valid activations for this token. If in softmax
@@ -96,13 +96,13 @@ class GraphParser(chainer.Chain):
             # otherwise when broadcasting and summing we will modify valid
             # batch activations for earlier tokens of the sentence.
             # ====================== Code for padding ==========================
-            # invalid_pad = ((0, int(batch_size - num_active)), (0, 0))
-            # d_arc_pad = F.pad(d_arc[i][:num_active],
-            #                   invalid_pad, 'constant', constant_values=0.)
+            invalid_pad = ((0, int(batch_size - num_active)), (0, 0))
+            d_arc_pad = F.pad(d_arc[i][:num_active],
+                              invalid_pad, 'constant', constant_values=0.)
             # ==================================================================
             # We broadcast w_arc[i] to the size of u_as since we want to add
             # the activation of a_i to all different activations a_j
-            a_u, a_w = F.broadcast(h_arc, d_arc[i])
+            a_u, a_w = F.broadcast(h_arc, d_arc_pad)
             # compute U * a_j + V * a_i for all j and this loops i
             comb_arc = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
             # compute g(a_j, a_i)
@@ -129,13 +129,13 @@ class GraphParser(chainer.Chain):
 
         calc_loss = sorted_labels is not None
         if calc_loss:
-            labels = self.encoder.pad_batch(sorted_labels)
+            labels = self.encoder.transpose_batch(sorted_labels)
 
         u_lbl = self.U_lbl(sent_states)
-        u_lbl = F.swapaxes(F.reshape(u_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
+        u_lbl = F.reshape(u_lbl, (-1, batch_size, self.mlp_lbl_units))
 
         w_lbl = self.W_lbl(sent_states)
-        w_lbl = F.swapaxes(F.reshape(w_lbl, (batch_size, -1, self.mlp_lbl_units)), 0, 1)
+        w_lbl = F.reshape(w_lbl, (-1, batch_size, self.mlp_lbl_units))
 
         sent_lbls = []
         # we start from 1 because we don't consider root
@@ -145,21 +145,22 @@ class GraphParser(chainer.Chain):
             # if we are calculating loss create truth variables
             if calc_loss:
                 # i-1 because sentence has root appended to beginning
-                gold_labels = Variable(labels[i-1])
-                # might need actual variable here?
+                gold_labels = labels[i-1]
+
                 true_heads = gold_heads[i-1]
             arc_pred = pred_heads[i-1]
 
             # ================== LABEL PREDICTION ======================
             # TODO: maybe we should use arc_pred sometimes in training??
-            # NOTE: gold_heads values after num_active get mutated here
+            # NOTE: gold_heads values after num_active gets mutated here
             # make sure you don't use ignore_label in softmax - even if ok in forward
             # it will be wrong in backprop (we limit to :self.num_active)
             # gh_copy = self.xp.copy(gold_heads.data)
-            head_indices = true_heads if chainer.config.train else arc_pred
+            head_indices = true_heads.data if chainer.config.train else arc_pred
+            head_indices = head_indices[:num_active]
 
             l_heads = u_lbl[head_indices, self.xp.arange(len(head_indices)), :]
-            l_w = w_lbl[i]
+            l_w = w_lbl[i][:num_active]
             UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
             lbls = self.V_lblT(UWl)
 
@@ -167,7 +168,11 @@ class GraphParser(chainer.Chain):
             if calc_loss:
                 label_loss = F.sum(F.softmax_cross_entropy(lbls[:num_active], gold_labels[:num_active], reduce='no'))
                 self.loss += label_loss
-            sent_lbls.append(F.reshape(lbls, (batch_size, -1, 1)))
+
+            reshaped_lbls = F.reshape(lbls, (num_active, -1, 1))
+            reshaped_lbls = F.pad(reshaped_lbls,
+                    ((0, batch_size - num_active),(0,0), (0,0)), 'constant')
+            sent_lbls.append(reshaped_lbls)
         lbls = F.concat(sent_lbls, axis=2)
         return lbls
 
@@ -215,10 +220,10 @@ class GraphParser(chainer.Chain):
         # comb states is batch_size x sentence_length x lstm_units
         comb_states = self.encoder(*sorted_inputs)
         # In order to predict which head is most probable for a given word
-        # P(w_j == head | w_i, S)  -- note for our purposes w_j is the variable
-        # we compute: g(a_j, a_i) = vT * tanh(U * a_j + V * a_i)
-        # for all j and a particular i and then pass the resulting vector through
-        # a softmax to get the probability distribution
+        # For each token in the sentence we get a vector represention
+        # for that token as a head, and another for that token as a dependent.
+        # The idea here is that we only need to calculate these once
+        # and then reuse them to get all combinations
         # ------------------------------------------------------
         # In g(a_j, a_i) we note that we can precompute the matrix multiplications
         # for each word, we consider all possible heads
@@ -229,10 +234,11 @@ class GraphParser(chainer.Chain):
 
         self.loss = 0
 
-        if calc_loss:
-            sorted_heads = self.encoder.pad_batch(sorted_heads)
-
         batch_stats = (batch_size, max_sent_len, self.encoder.col_lengths)
+
+        if calc_loss:
+            # NOTE: We need the heads variables both in predict heads & labels
+            sorted_heads = self.encoder.transpose_batch(sorted_heads)
 
         arcs = self._predict_heads(comb_states_2d, self.encoder.mask, batch_stats,
                 sorted_heads=sorted_heads)
@@ -255,7 +261,7 @@ class GraphParser(chainer.Chain):
                 arc_preds = np.array([dd.parse_proj(each)[1:] for each in pd_arcs])
             else:
                 raise ValueError('Unexpected method')
-            p_arcs = self.encoder.pad_batch(arc_preds)
+            p_arcs = self.encoder.transpose_batch(arc_preds, create_var=False)
         else:
             # We ignore tree constraints - head predictions may create cycles
             # we pass predict_labels the gpu object
@@ -266,6 +272,8 @@ class GraphParser(chainer.Chain):
 
         lbls = self._predict_labels(comb_states_2d, p_arcs, sorted_heads,
                 batch_stats, sorted_labels=sorted_labels)
+
+        lbls = cuda.to_cpu(lbls.data)
 
         # we only bother actually getting the softmax values
         # if we are to visualise the results
@@ -289,14 +297,12 @@ class GraphParser(chainer.Chain):
         # normalize loss over all tokens seen
         # self.loss = self.loss / total_tokens
 
-        lbls.data = cuda.to_cpu(lbls.data)
-
         inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
         if self.debug:
             self.arcs = self.arcs[inv_perm_indices]
         # permute back to correct batch order
         arcs = arc_preds[inv_perm_indices]
-        lbls = lbls.data[inv_perm_indices]
+        lbls = lbls[inv_perm_indices]
 
         lbl_preds = np.argmax(lbls, axis=1)
 
@@ -326,7 +332,3 @@ class GraphParser(chainer.Chain):
     #             self.sleep_time),
     #           end='', flush=True)
     #     sleep(self.sleep_time)
-
-    def reset_state(self):
-        # reset the state of LSTM layers
-        self.encoder.reset_state()
