@@ -96,16 +96,14 @@ class GraphParser(chainer.Chain):
             # otherwise when broadcasting and summing we will modify valid
             # batch activations for earlier tokens of the sentence.
             # ====================== Code for padding ==========================
-            invalid_pad = ((0, int(batch_size - num_active)), (0, 0))
-            d_arc_pad = F.pad(d_arc[i][:num_active],
-                              invalid_pad, 'constant', constant_values=0.)
+            # invalid_pad = ((0, int(batch_size - num_active)), (0, 0))
+            # d_arc_pad = F.pad(d_arc[i][:num_active],
+            #                   invalid_pad, 'constant', constant_values=0.)
             # ==================================================================
-            # We broadcast w_arc[i] to the size of u_as since we want to add
-            # the activation of a_i to all different activations a_j
-            a_u, a_w = F.broadcast(h_arc, d_arc_pad)
-            # compute U * a_j + V * a_i for all j and this loops i
+            a_u, a_w = F.broadcast(h_arc, d_arc[i])
+
             comb_arc = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
-            # compute g(a_j, a_i)
+
             arc_logit = self.vT(comb_arc)
             arcs = F.swapaxes(F.reshape(arc_logit, (-1, batch_size)), 0, 1)
             arcs = F.where(mask, arcs, mask_vals)

@@ -3,6 +3,7 @@ import numpy as np
 import chainer
 import chainer.functions as F
 import chainer.links as L
+import chainer.links.connection.n_step_lstm as chainer_nstep
 from johnny.extern import NStepLSTMBase
 
 
@@ -91,6 +92,8 @@ class Encoder(chainer.Chain):
         super(Encoder, self).__init__()
         with self.init_scope():
             self.embedder = embedder
+            # we already have sorted input, so we removed the code that permutes
+            # input and output (hence why we don't use the chainer class)
             self.rnn = NStepLSTMBase(num_lstm_layers,
                                      self.embedder.out_size,
                                      lstm_units,
@@ -140,10 +143,8 @@ class Encoder(chainer.Chain):
         sents = in_seqs[0]
         # all sequences in in_seqs are assumed to have length corresponding
         # to in_seqs[0]
-        # cumsum crashes gpu - I know, right?
-        self.seq_lengths = [len(sent) for sent in sents]
-        self.max_seq_len = max(self.seq_lengths)
-        self.batch_size = len(self.seq_lengths)
+        self.max_seq_len = len(sents[0])
+        self.batch_size = len(sents)
 
         # before we modify input we check if our embedder handles subword
         # information. if so we want to pass the list of individual words
@@ -161,18 +162,16 @@ class Encoder(chainer.Chain):
             # replace 3D input with 2D - words replaced with hash
             in_seqs[0] = tuple(tuple(map(word_encoder.word_to_index, s)) for s in sents)
 
-        # turn batch_size x seq_len* -> seq_len x batch_size
+        # turn batch_size x seq_len -> seq_len x batch_size
         # NOTE: seq_len is variable - we aren't padding
         fwd = [self.transpose_batch(seq) for seq in in_seqs]
 
         # collapse all ids into a vector
         embeddings = self.embedder(*(F.concat(f, axis=0) for f in fwd))
 
-        # self.mask = (fwd[0] != self.CHAINER_IGNORE_LABEL).T
-
-        # self.col_lengths = self.xp.sum(self.mask, axis=0)
         self.col_lengths = [len(col) for col in fwd[0]]
 
+        # use np because cumsum crashes gpu - I know, right?
         self.batch_split = np.cumsum(self.col_lengths[:-1])
         # split back to batch size
         batch_embeddings = F.split_axis(embeddings, self.batch_split, axis=0)
@@ -188,7 +187,7 @@ class Encoder(chainer.Chain):
         mask_shape = (self.batch_size, self.max_seq_len)
         self.mask = self.xp.ones(mask_shape, dtype=self.xp.bool_)
         for i, l in enumerate(self.col_lengths):
-            self.mask[l:, i] = 0
+            self.mask[l:, i] = False
 
         if getattr(self.embedder, 'is_subword', False):
             # Remember to clear cache
@@ -207,15 +206,11 @@ class SubwordEncoder(chainer.Chain):
         super(SubwordEncoder, self).__init__()
         with self.init_scope():
             self.embed_layer = L.EmbedID(vocab_size, num_units)
-            # Forward
-            self.f_lstm = ['f_lstm_%d' % i for i in range(num_layers)]
-            for lstm_name in self.f_lstm:
-                setattr(self, lstm_name, L.LSTM(num_units, num_units))
-            # Backward
-            if use_bilstm:
-                self.b_lstm = ['b_lstm_%d' % i for i in range(num_layers)]
-                for lstm_name in self.b_lstm:
-                    setattr(self, lstm_name, L.LSTM(num_units, num_units))
+            self.rnn = chainer_nstep.NStepLSTMBase(num_layers,
+                                                   num_units,
+                                                   num_units,
+                                                   rec_dropout,
+                                                   use_bi_direction=use_bilstm)
         self.vocab_size = vocab_size
         self.num_units = num_units
         self.num_layers = num_layers
@@ -229,69 +224,26 @@ class SubwordEncoder(chainer.Chain):
 
     def __call__(self, batch):
         return self.embedding[batch.data]
-        # return F.vstack([self.cache[word] for word in batch.data])
 
     def encode_words(self, word_list):
-        # reset state at each batch
-        self.reset_state()
 
-        # sort words - longest first
-        sorted_wl = sorted(word_list, key=lambda x: len(x), reverse=True)
-        max_word_len = len(sorted_wl[0])
+        word_lengths = [len(w) for w in word_list]
+        batch_split = np.cumsum(word_lengths[:-1])
 
-        if self.use_bilstm:
-            rev_wl = [word[::-1] for word in sorted_wl]
+        word_vars = [chainer.Variable(self.xp.array(w, dtype=self.xp.int32))
+                                      for w in word_list]
+        embeddings = self.embed_layer(F.concat(word_vars, axis=0))
 
-        for i in range(max_word_len):
-            c_v = self.xp.array([word[i] for word in sorted_wl if i < len(word)], dtype=self.xp.int32)
-            # c_v = chainer.cuda.to_gpu(c_v)
-            c = chainer.Variable(c_v)
-            self.encode(c, self.f_lstm)
-            if self.use_bilstm:
-                rev_c_v = self.xp.array([word[i] for word in rev_wl if i < len(word)], dtype=self.xp.int32)
-                # rev_c_v = chainer.cuda.to_gpu(rev_c_v)
-                rev_c = chainer.Variable(rev_c_v)
-                self.encode(rev_c, self.b_lstm)
+        # split back to batch size
+        batch_embeddings = F.split_axis(embeddings, batch_split, axis=0)
+        _, _, hs = self.rnn(None, None, batch_embeddings)
+        self.embedding = F.vstack([h[-1] for h in hs])
 
-        # concatenate forward and backward encoding
-        if self.use_bilstm:
-            self.embedding = F.concat((self[self.f_lstm[-1]].h, self[self.b_lstm[-1]].h))
-        else:
-            self.embedding = self[self.f_lstm[-1]].h
-        for i, word in enumerate(sorted_wl):
-            self.cache[tuple(word)] = i# F.reshape(embedding[i], shape=(1, -1))
-    #
-    # def hash_word(self, word):
-    #     """We want to avoid having to pad subword tokens on the input,
-    #     so instead we replace the word with a hash of the subword tokens.
-    #     We only pass the subword tokens to the encode_words function as a
-    #     2D list : words x subword tokens. This way we don't have to worry
-    #     about 3D input to the sentence encoder at a higher level
-    #     (sentences x words x subword tokens -> sentences x word_hashes)
-    #     """
-    #     # we assume words are some sort of iterable of subword tokens.
-    #     # if they are not tuples, we convert to tuple for hashing.
-    #     return hash(word) if isinstance(word, tuple) else hash(tuple(word))
+        for i, word in enumerate(word_list):
+            self.cache[tuple(word)] = i
 
     def word_to_index(self, word):
         return self.cache[tuple(word)]
-
-    def encode(self, char, lstm_layer_list):
-        # get embedding + dropout
-        act = self.embed_layer(char)
-        if self.inp_dropout > 0.:
-            act = F.dropout(act, ratio=self.inp_dropout)
-
-        # feed into lstm layers
-        for lstm_layer in lstm_layer_list:
-            act = self[lstm_layer](act)
-            if self.rec_dropout > 0.:
-                act = F.dropout(act, ratio=self.rec_dropout)
-
-    def reset_state(self):
-        # reset the state of LSTM layers
-        for lstm_name in self.f_lstm + self.b_lstm:
-            self[lstm_name].reset_state()
 
     def clear_cache(self):
         self.cache = dict()
