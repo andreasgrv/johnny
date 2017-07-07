@@ -12,7 +12,6 @@ from johnny.extern import DependencyDecoder
 
 # TODO Check multiple roots issue
 # TODO Reimplement visualisation
-# TODO Add dropout to head and label MLPs
 # TODO Check constraint algorithms + optimise
 # TODO Maybe switch to using predicted arcs towards end of training
 # TODO Think of ways of avoiding self prediction
@@ -26,6 +25,8 @@ class GraphParser(chainer.Chain):
                  num_labels=46,
                  mlp_arc_units=100,
                  mlp_lbl_units=100,
+                 arc_dropout=0.2,
+                 lbl_dropout=0.2,
                  treeify='chu',
                  visualise=False,
                  debug=False
@@ -35,6 +36,8 @@ class GraphParser(chainer.Chain):
         self.num_labels = num_labels
         self.mlp_arc_units = mlp_arc_units
         self.mlp_lbl_units = mlp_lbl_units
+        self.arc_dropout = arc_dropout
+        self.lbl_dropout = lbl_dropout
         self.treeify = treeify.lower()
         self.visualise = visualise
         self.debug = debug
@@ -48,13 +51,13 @@ class GraphParser(chainer.Chain):
 
             self.vT = L.Linear(mlp_arc_units, 1)
             # head
-            self.H_arc = L.Linear(self.unit_mult*self.encoder.lstm_units, mlp_arc_units)
+            self.H_arc = L.Linear(self.unit_mult*self.encoder.num_units, mlp_arc_units)
             # dependent
-            self.D_arc = L.Linear(self.unit_mult*self.encoder.lstm_units, mlp_arc_units)
+            self.D_arc = L.Linear(self.unit_mult*self.encoder.num_units, mlp_arc_units)
 
             self.V_lblT = L.Linear(mlp_lbl_units, self.num_labels)
-            self.U_lbl = L.Linear(self.unit_mult*self.encoder.lstm_units, mlp_lbl_units)
-            self.W_lbl = L.Linear(self.unit_mult*self.encoder.lstm_units, mlp_lbl_units)
+            self.U_lbl = L.Linear(self.unit_mult*self.encoder.num_units, mlp_lbl_units)
+            self.W_lbl = L.Linear(self.unit_mult*self.encoder.num_units, mlp_lbl_units)
 
     def _predict_heads(self, sent_states, mask, batch_stats, sorted_heads=None):
         """For each token in the sentence predict which token in the sentence
@@ -102,9 +105,12 @@ class GraphParser(chainer.Chain):
             # ==================================================================
             a_u, a_w = F.broadcast(h_arc, d_arc[i])
 
-            comb_arc = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
+            arc_logit = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
 
-            arc_logit = self.vT(comb_arc)
+            if self.arc_dropout > 0.:
+                arc_logit = F.dropout(arc_logit, ratio=self.arc_dropout)
+
+            arc_logit = self.vT(arc_logit)
             arcs = F.swapaxes(F.reshape(arc_logit, (-1, batch_size)), 0, 1)
             arcs = F.where(mask, arcs, mask_vals)
             # Calculate losses
@@ -160,6 +166,10 @@ class GraphParser(chainer.Chain):
             l_heads = u_lbl[head_indices, self.xp.arange(len(head_indices)), :]
             l_w = w_lbl[i][:num_active]
             UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
+
+            if self.lbl_dropout > 0.:
+                UWl = F.dropout(UWl, ratio=self.lbl_dropout)
+
             lbls = self.V_lblT(UWl)
 
             # Calculate losses
@@ -228,7 +238,7 @@ class GraphParser(chainer.Chain):
         # we can pre-calculate U * a_j , for all a_j
         # reshape to 2D to calculate matrix multiplication
         comb_states_2d = F.reshape(comb_states,
-                (-1, self.encoder.lstm_units * self.unit_mult))
+                (-1, self.encoder.num_units * self.unit_mult))
 
         self.loss = 0
 

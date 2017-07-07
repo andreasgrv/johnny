@@ -11,16 +11,18 @@ SEED = 13
 def simple_word_model():
     np.random.seed(SEED)
     embed = Embedder((10,), (10,), dropout=0.)
-    encoder = Encoder(embed, lstm_units=8, dropout=0.)
-    model = GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
+    encoder = Encoder(embed, num_units=8, dropout=0.)
+    model = GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, lbl_dropout=0.,
+            arc_dropout=0., treeify='none', debug=True)
     return model
 
 @pytest.fixture
 def simple_pos_model():
     np.random.seed(SEED)
     embed = Embedder((10, 10), (10, 10), dropout=0.)
-    encoder = Encoder(embed, lstm_units=8, dropout=0.)
-    model = GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
+    encoder = Encoder(embed, num_units=8, dropout=0.)
+    model = GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, lbl_dropout=0.,
+            arc_dropout=0., treeify='none', debug=True)
     return model
 
 @pytest.fixture
@@ -28,8 +30,9 @@ def dropout_pos_model():
     def instance():
         np.random.seed(SEED)
         embed = Embedder((10, 10), (10, 10), dropout=0.2)
-        encoder = Encoder(embed, lstm_units=8, dropout=0.2)
-        return GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, treeify='none', debug=True)
+        encoder = Encoder(embed, num_units=8, dropout=0.2)
+        return GraphParser(encoder, mlp_arc_units=8, mlp_lbl_units=8, lbl_dropout=0.,
+                arc_dropout=0., treeify='none', debug=True)
     return instance
 
 def test_pred_dimensionality_basic(simple_word_model):

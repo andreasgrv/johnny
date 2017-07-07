@@ -86,23 +86,23 @@ class Encoder(chainer.Chain):
 
     CHAINER_IGNORE_LABEL = -1
 
-    def __init__(self, embedder, use_bilstm=True, num_lstm_layers=1,
-                 lstm_units=100, dropout=0.2):
+    def __init__(self, embedder, use_bilstm=True, num_layers=1,
+                 num_units=100, dropout=0.2):
 
         super(Encoder, self).__init__()
         with self.init_scope():
             self.embedder = embedder
             # we already have sorted input, so we removed the code that permutes
             # input and output (hence why we don't use the chainer class)
-            self.rnn = NStepLSTMBase(num_lstm_layers,
+            self.rnn = NStepLSTMBase(num_layers,
                                      self.embedder.out_size,
-                                     lstm_units,
+                                     num_units,
                                      dropout,
                                      use_bi_direction=use_bilstm)
 
         self.use_bilstm = use_bilstm
-        self.num_lstm_layers = num_lstm_layers
-        self.lstm_units = lstm_units
+        self.num_layers = num_layers
+        self.num_units = num_units
         self.dropout = dropout
 
         self.mask = None
