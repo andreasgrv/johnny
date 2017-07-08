@@ -6,7 +6,6 @@ import chainer
 from time import sleep
 from chainer import Variable, cuda
 from johnny.utils import bar, discrete_print
-from johnny.dep import UDepVocab
 from johnny.extern import DependencyDecoder
 
 

@@ -1,5 +1,5 @@
 import pytest
-from johnny.dep import UDepVocab
+from johnny.vocab import UDepVocab
 
 def test_basic():
     p = UDepVocab()
