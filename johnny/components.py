@@ -6,6 +6,7 @@ import chainer.links as L
 import chainer.links.connection.n_step_lstm as chainer_nstep
 from johnny.extern import NStepLSTMBase
 
+CHAINER_IGNORE_LABEL = -1
 
 class Embedder(chainer.Chain):
     """A general embedder that concatenates the embeddings of an arbitrary
@@ -32,7 +33,7 @@ class Embedder(chainer.Chain):
         assert(len(in_sizes) == len(out_sizes))
         with self.init_scope():
             for index, (in_size, out_size) in enumerate(zip(in_sizes, out_sizes)):
-                embed_layer = L.EmbedID(in_size, out_size, ignore_label=-1)
+                embed_layer = L.EmbedID(in_size, out_size, ignore_label=CHAINER_IGNORE_LABEL)
                 self.set_embed(index, embed_layer)
         self.dropout = dropout
         self.out_size = sum(out_sizes)
@@ -59,7 +60,7 @@ class SubwordEmbedder(chainer.Chain):
         with self.init_scope():
             self.word_encoder = word_encoder
             for index, (in_size, out_size) in enumerate(zip(self.in_sizes, self.out_sizes), 1):
-                embed_layer = L.EmbedID(in_size, out_size, ignore_label=-1)
+                embed_layer = L.EmbedID(in_size, out_size, ignore_label=CHAINER_IGNORE_LABEL)
                 self.set_embed(index, embed_layer)
         self.dropout = dropout
         self.out_size = self.word_encoder.out_size
@@ -205,7 +206,8 @@ class SubwordEncoder(chainer.Chain):
 
         super(SubwordEncoder, self).__init__()
         with self.init_scope():
-            self.embed_layer = L.EmbedID(vocab_size, num_units)
+            self.embed_layer = L.EmbedID(vocab_size, num_units,
+                                         ignore_label=CHAINER_IGNORE_LABEL)
             self.rnn = chainer_nstep.NStepLSTMBase(num_layers,
                                                    num_units,
                                                    num_units,
@@ -252,6 +254,8 @@ class SubwordEncoder(chainer.Chain):
 class CNNSubwordEncoder(chainer.Chain):
 
     FILTER_MULTIPLIER = 25
+    IGNORE_LABEL = -1
+
     def __init__(self, vocab_size, embed_units=15, num_highway_layers=1,
                  inp_dropout=0.2, ngrams=(1, 2, 3, 4, 5, 6), stride=1, num_filters=None):
 
@@ -264,7 +268,8 @@ class CNNSubwordEncoder(chainer.Chain):
         assert(num_highway_layers >= 0)
         out_size = sum(num_filters)
         with self.init_scope():
-            self.embed_layer = L.EmbedID(vocab_size, embed_units)
+            self.embed_layer = L.EmbedID(vocab_size, embed_units,
+                                         ignore_label=self.IGNORE_LABEL)
             self.cnn_blocks = ['cnn_%d' % n for n in ngrams]
             self.highways = ['highway_%d' % i for i in range(num_highway_layers)]
             # for n in ngrams:
@@ -288,40 +293,60 @@ class CNNSubwordEncoder(chainer.Chain):
 
     def encode_words(self, word_list):
 
-        word_lengths = [len(w) for w in word_list]
-        max_word_length = max(word_lengths)
-        batch_split = np.cumsum(word_lengths[:-1])
+        batch_size = len(word_list)
+        sorted_word_list = sorted(word_list, key=lambda x: len(x), reverse=True)
 
-        word_vars = [chainer.Variable(self.xp.array(w, dtype=self.xp.int32))
-                                      for w in word_list]
+        # split into parts - because there will be very few very long words
+        # might as well pack them together to avoid wasting computation on padding
+        if batch_size > 40:
+            SPLIT_INDEX = int(0.05 * batch_size)
+            batch_split = np.array_split(sorted_word_list, [SPLIT_INDEX])
+        else:
+            batch_split = [sorted_word_list]
 
-        embeddings = self.embed_layer(F.concat(word_vars, axis=0))
+        acts = None
+        for shard in batch_split:
 
-        batch_embeddings = F.split_axis(embeddings, batch_split, axis=0)
+            shard_len = len(shard)
+            max_shard_word_length = len(shard[0])
+            word_vars = F.concat([chainer.Variable(self.xp.array([w[i]
+                                                   if i < len(w)
+                                                   else CHAINER_IGNORE_LABEL
+                                                   for i in range(max_shard_word_length)],
+                                                   dtype=self.xp.int32))
+                                          for w in shard], axis=0)
 
-        padded_batch_embeddings = F.pad_sequence(batch_embeddings, max_word_length)
+            embeddings = self.embed_layer(word_vars)
 
-        stacked = F.stack(padded_batch_embeddings, axis=0)
+            stacked = F.reshape(embeddings, (shard_len, -1, self.embed_units))
 
-        stacked = F.expand_dims(stacked, axis=1)
-        # for each in batch_embeddings:
-        hs = []
-        for block in self.cnn_blocks:
-            h = self[block](stacked)
-            h = F.max_pooling_2d(h, (max_word_length, self.embed_units))
-            # print(max_word_length, h.shape)
-            h = F.squeeze(h)
-            hs.append(h)
+            stacked = F.expand_dims(stacked, axis=1)
+            # for each in batch_embeddings:
+            hs = None
+            for block in self.cnn_blocks:
+                h = self[block](stacked)
+                h = F.max_pooling_2d(h, (max_shard_word_length, self.embed_units))
+                # print(max_word_length, h.shape)
+                h = F.squeeze(h)
+                if hs is None:
+                    hs = h
+                else:
+                    hs = F.concat([hs, h], axis=1)
 
-        act = F.tanh(F.concat(hs, axis=1))
-        for highway in self.highways:
-            if self.inp_dropout > 0.:
-                act = F.dropout(act, ratio=self.inp_dropout)
-            act = self[highway](act)
-        # Don't apply dropout to last layer
-        self.embedding = act
+            act = F.tanh(hs)
+            # Don't apply dropout to last layer
+            for highway in self.highways:
+                if self.inp_dropout > 0.:
+                    act = F.dropout(act, ratio=self.inp_dropout)
+                act = self[highway](act)
+            if acts is None:
+                acts = act
+            else:
+                acts = F.vstack([acts, act])
 
-        for i, word in enumerate(word_list):
+        self.embedding = acts
+
+        for i, word in enumerate(sorted_word_list):
             self.cache[tuple(word)] = i
 
     def word_to_index(self, word):
@@ -346,7 +371,7 @@ class CNNSubwordEncoder(chainer.Chain):
 #         assert(num_highway_layers >= 0)
 #         out_size = sum(num_filters)
 #         with self.init_scope():
-#             self.embed_layer = L.EmbedID(vocab_size, embed_units)
+#             self.embed_layer = L.EmbedID(vocab_size, embed_units, ignore_label=CHAINER_IGNORE_LABEL)
 #             self.cnn_blocks = ['cnn_%d' % n for n in ngrams]
 #             self.highways = ['highway_%d' % i for i in range(num_highway_layers)]
 #             # for n in ngrams:
