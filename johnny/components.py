@@ -247,3 +247,167 @@ class SubwordEncoder(chainer.Chain):
 
     def clear_cache(self):
         self.cache = dict()
+
+
+class CNNSubwordEncoder(chainer.Chain):
+
+    FILTER_MULTIPLIER = 25
+    def __init__(self, vocab_size, embed_units=15, num_highway_layers=1,
+                 inp_dropout=0.2, ngrams=(1, 2, 3, 4, 5, 6), stride=1, num_filters=None):
+
+        super(CNNSubwordEncoder, self).__init__()
+        if num_filters is None:
+            # http://www.people.fas.harvard.edu/~yoonkim/data/char-nlm.pdf
+            # Table 2 small model uses constant size
+            num_filters = [n * self.FILTER_MULTIPLIER for n in ngrams]
+        assert(len(num_filters) == len(ngrams))
+        assert(num_highway_layers >= 0)
+        out_size = sum(num_filters)
+        with self.init_scope():
+            self.embed_layer = L.EmbedID(vocab_size, embed_units)
+            self.cnn_blocks = ['cnn_%d' % n for n in ngrams]
+            self.highways = ['highway_%d' % i for i in range(num_highway_layers)]
+            # for n in ngrams:
+            #     setattr(self, self.cnn_blocks[n])
+            for i, name in enumerate(self.cnn_blocks):
+                setattr(self, name, L.Convolution2D(1,
+                                       num_filters[i],
+                                       (ngrams[i], embed_units),
+                                       stride))
+            for name in self.highways:
+                setattr(self, name, L.Highway(out_size))
+        self.vocab_size = vocab_size
+        self.embed_units = embed_units
+        self.num_highway_layers = num_highway_layers
+        self.inp_dropout = inp_dropout
+        self.out_size = out_size
+        self.cache = dict()
+
+    def __call__(self, batch):
+        return self.embedding[batch.data]
+
+    def encode_words(self, word_list):
+
+        word_lengths = [len(w) for w in word_list]
+        max_word_length = max(word_lengths)
+        batch_split = np.cumsum(word_lengths[:-1])
+
+        word_vars = [chainer.Variable(self.xp.array(w, dtype=self.xp.int32))
+                                      for w in word_list]
+
+        embeddings = self.embed_layer(F.concat(word_vars, axis=0))
+
+        batch_embeddings = F.split_axis(embeddings, batch_split, axis=0)
+
+        padded_batch_embeddings = F.pad_sequence(batch_embeddings, max_word_length)
+
+        stacked = F.stack(padded_batch_embeddings, axis=0)
+
+        stacked = F.expand_dims(stacked, axis=1)
+        # for each in batch_embeddings:
+        hs = []
+        for block in self.cnn_blocks:
+            h = self[block](stacked)
+            h = F.max_pooling_2d(h, (max_word_length, self.embed_units))
+            # print(max_word_length, h.shape)
+            h = F.squeeze(h)
+            hs.append(h)
+
+        act = F.tanh(F.concat(hs, axis=1))
+        for highway in self.highways:
+            if self.inp_dropout > 0.:
+                act = F.dropout(act, ratio=self.inp_dropout)
+            act = self[highway](act)
+        # Don't apply dropout to last layer
+        self.embedding = act
+
+        for i, word in enumerate(word_list):
+            self.cache[tuple(word)] = i
+
+    def word_to_index(self, word):
+        return self.cache[tuple(word)]
+
+    def clear_cache(self):
+        self.cache = dict()
+
+
+# class CNNDSubwordEncoder(chainer.Chain):
+#
+#     FILTER_MULTIPLIER = 25
+#     def __init__(self, vocab_size, embed_units=15, num_highway_layers=1,
+#                  inp_dropout=0.2, ngrams=(1, 2, 3, 4, 5, 6), stride=1, num_filters=None):
+#
+#         super(CNNDSubwordEncoder, self).__init__()
+#         if num_filters is None:
+#             # http://www.people.fas.harvard.edu/~yoonkim/data/char-nlm.pdf
+#             # Table 2 small model uses constant size
+#             num_filters = [n * self.FILTER_MULTIPLIER for n in ngrams]
+#         assert(len(num_filters) == len(ngrams))
+#         assert(num_highway_layers >= 0)
+#         out_size = sum(num_filters)
+#         with self.init_scope():
+#             self.embed_layer = L.EmbedID(vocab_size, embed_units)
+#             self.cnn_blocks = ['cnn_%d' % n for n in ngrams]
+#             self.highways = ['highway_%d' % i for i in range(num_highway_layers)]
+#             # for n in ngrams:
+#             #     setattr(self, self.cnn_blocks[n])
+#             for i, name in enumerate(self.cnn_blocks):
+#                 setattr(self, name, L.ConvolutionND(1, embed_units,
+#                                        num_filters[i],
+#                                        ngrams[i],
+#                                        stride))
+#             for name in self.highways:
+#                 setattr(self, name, L.Highway(out_size))
+#         self.vocab_size = vocab_size
+#         self.embed_units = embed_units
+#         self.num_highway_layers = num_highway_layers
+#         self.inp_dropout = inp_dropout
+#         self.out_size = out_size
+#         self.cache = dict()
+#
+#     def __call__(self, batch):
+#         return self.embedding[batch.data]
+#
+#     def encode_words(self, word_list):
+#
+#         batch_size = len(word_list)
+#         word_lengths = [len(w) for w in word_list]
+#         max_word_length = max(word_lengths)
+#         batch_split = np.cumsum(word_lengths[:-1])
+#
+#         word_vars = [chainer.Variable(self.xp.array(w, dtype=self.xp.int32))
+#                                       for w in word_list]
+#
+#         embeddings = self.embed_layer(F.concat(word_vars, axis=0))
+#
+#         batch_embeddings = F.split_axis(embeddings, batch_split, axis=0)
+#
+#         padded_batch_embeddings = F.pad_sequence(batch_embeddings, max_word_length)
+#
+#         stacked = F.stack(padded_batch_embeddings, axis=0)
+#
+#         stacked = F.swapaxes(stacked, 1, 2)
+#         # for each in batch_embeddings:
+#         hs = []
+#         for block in self.cnn_blocks:
+#             h = self[block](F.reshape(stacked, (batch_size, self.embed_units, -1)))
+#             h = F.max_pooling_nd(h, max_word_length)
+#             h = F.reshape(h, (batch_size, -1))
+#             hs.append(h)
+#
+#         act = F.tanh(F.concat(hs, axis=1))
+#         for highway in self.highways:
+#             if self.inp_dropout > 0.:
+#                 act = F.dropout(act, ratio=self.inp_dropout)
+#             act = self[highway](act)
+#         # Don't apply dropout to last layer
+#         self.embedding = act
+#
+#         for i, word in enumerate(word_list):
+#             self.cache[tuple(word)] = i
+#
+#     def word_to_index(self, word):
+#         return self.cache[tuple(word)]
+#
+#     def clear_cache(self):
+#         self.cache = dict()
