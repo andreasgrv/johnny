@@ -199,12 +199,12 @@ class Encoder(chainer.Chain):
         return states
 
 
-class SubwordEncoder(chainer.Chain):
+class LSTMSubwordEncoder(chainer.Chain):
 
     def __init__(self, vocab_size, num_units, num_layers,
                  inp_dropout=0.2, rec_dropout=0.2, use_bilstm=True):
 
-        super(SubwordEncoder, self).__init__()
+        super(LSTMSubwordEncoder, self).__init__()
         with self.init_scope():
             self.embed_layer = L.EmbedID(vocab_size, num_units,
                                          ignore_label=CHAINER_IGNORE_LABEL)
