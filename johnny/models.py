@@ -302,7 +302,8 @@ class GraphParser(chainer.Chain):
             #              'constant', constant_values=self.MIN_PAD)
 
         # normalize loss over all tokens seen
-        # self.loss = self.loss / total_tokens
+        total_tokens = np.sum(self.encoder.col_lengths)
+        self.loss = self.loss / total_tokens
 
         inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
         if self.debug:
