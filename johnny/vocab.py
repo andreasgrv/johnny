@@ -57,7 +57,7 @@ class Vocab(object):
                 % (self.size, len(self), self.threshold))
 
     def __len__(self):
-        return len(self.index)
+        return len(self.index) + len(self.reserved)
 
     def __getitem__(self, key):
         return self.index[key]
