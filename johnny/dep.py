@@ -1,11 +1,12 @@
 import os
 import six
+import glob
 import codecs
 import json
 import re
 import numpy as np
 from itertools import chain
-from johnny import DATA_ENV_VAR
+from johnny import CONLL2006_FOLDER, CONLL2017_FOLDER
 
 # TODO : compare what we get from this loader with what we get from CONLL script
 
@@ -23,11 +24,6 @@ def py2repr(f):
             return x
     return func
     
-# TODO: Create Dataset class - that allows stats viewing.
-# the Dataset class should be a list of sentences enhanced with
-# properties such as words, heads, pos etc. 
-# the loader should return a Dataset object instead of
-# a list of sentences
 
 class Dataset(object):
 
@@ -231,37 +227,23 @@ class Token(object):
 
 class UDepLoader(object):
     """Loader for universal dependencies datasets"""
-    LANG_FOLDER_REGEX = 'UD_(?P<lang>[A-Za-z\-\_]+)'
-    PREFIX = 'UD_'
-    TRAIN_SUFFIX = 'ud-train.conllu'
-    DEV_SUFFIX = 'ud-dev.conllu'
 
-    def __init__(self, datafolder=None):
-        super(UDepLoader, self).__init__()
-        try:
-            self.datafolder = datafolder or os.environ[DATA_ENV_VAR]
-        except KeyError:
-            raise ValueError('You need to specify the path to the universal dependency '
-                'root folder either using the datafolder argument or by '
-                'setting the %s environment variable.' % self.DATA_ENV_VAR)
-        self.lang_folders = dict()
-        found = False
-        for lang_folder in os.listdir(self.datafolder):
-            match = re.match(self.LANG_FOLDER_REGEX, lang_folder)
-            if match:
-                lang = match.groupdict()['lang']
-                self.lang_folders[lang] = lang_folder
-                found = True
-        if not found:
-            raise ValueError('No UD language folders '
-                             'found in dir %s' % self.datafolder)
+    AVAILABLE_LOADERS = ['CONLL-2017', 'CONLL-2006']
 
-    def __repr__(self):
-        return ('<UDepLoader object from folder %s with %d languages>'
-                % (self.datafolder, len(self.langs)))
+    def __init__(self, name, **kwargs):
+        if name == 'CONLL-2017':
+            self.loader = CONLL2017Loader(**kwargs)
+        elif name == 'CONLL-2006':
+            self.loader = CONLL2006Loader(**kwargs)
+        else:
+            raise ValueError('Unknown loader, name is not in %s'
+                             % self.AVAILABLE_LOADERS)
+
+    def load_train_dev(self, lang, verbose=False):
+        return self.loader.load_train_dev(lang, verbose=verbose)
 
     @staticmethod
-    def load_conllu(path):
+    def load_conllu_sents(path):
         """ Read in conll file and return a list of sentences """
         CONLLU_COMMENT = '#'
         sents = []
@@ -277,41 +259,119 @@ class UDepLoader(object):
                     cols = line.split('\t')
                     assert(len(cols) == 10)
                     tokens.append(Token(*cols))
-        return Dataset(sents)
+        return sents
 
-    def load_train(self, lang, verbose=False):
+    @staticmethod
+    def load_conllu(path):
+        return Dataset(UDepLoader.load_conllu_sents(path))
+
+
+class CONLL2006Loader(object):
+
+    def __init__(self, datafolder=None, train_percentage=0.8):
+        super(CONLL2006Loader, self).__init__()
+        try:
+            self.datafolder = datafolder or os.environ[CONLL2006_FOLDER]
+        except KeyError:
+            raise ValueError('You need to specify the path to the universal dependency '
+                'root folder either using the datafolder argument or by '
+                'setting the %s environment variable.' % CONLL2006_FOLDER)
+        self.train_percentage = train_percentage
+        self.name = 'CONLL-2006'
+        file_path = os.path.join(self.datafolder, '*', '*', '*', '*', '*', '*.conll')
+        file_paths = [f for f in glob.glob(file_path)]
+        self.train_map = dict((os.path.basename(f).split('_', 1)[0], f)
+                              for f in file_paths
+                              if 'train' in f)
+        # can't use 'test' since some files don't have test in the name!
+        self.test_map = dict((os.path.basename(f).split('_', 1)[0], f)
+                              for f in file_paths
+                              if '_gs' in f)
+        assert(len(self.train_map) == len(self.test_map))
+
+    def __repr__(self):
+        return ('<CONLL2006Loader object from folder %s with %d languages>'
+                % (self.datafolder, len(self.langs)))
+
+    def load_train_dev(self, lang, verbose=False):
+        p = self.train_map.get(lang, None)
+        if p:
+            sents = UDepLoader.load_conllu_sents(p) 
+            num_sents = len(sents)
+            split_index = int(num_sents * self.train_percentage)
+            train = Dataset(sents[:split_index], lang=lang, name=self.name)
+            dev = Dataset(sents[split_index:], lang=lang, name=self.name)
+            if verbose:
+                print('Loaded %d sentences from %s' % (len(train), p))
+                print('Loaded %d sentences from %s' % (len(dev), p))
+            return train, dev
+        else:
+            raise ValueError("Couldn't find a training file for %s"
+                             % (lang))
+
+    @property
+    def langs(self):
+        return list(six.viewkeys(self.train_map))
+
+
+class CONLL2017Loader(object):
+    LANG_FOLDER_REGEX = 'UD_(?P<lang>[A-Za-z\-\_]+)'
+    PREFIX = 'UD_'
+    TRAIN_SUFFIX = 'ud-train.conllu'
+    DEV_SUFFIX = 'ud-dev.conllu'
+
+    def __init__(self, datafolder=None):
+        super(CONLL2017Loader, self).__init__()
+        try:
+            self.datafolder = datafolder or os.environ[CONLL2017_FOLDER]
+        except KeyError:
+            raise ValueError('You need to specify the path to the universal dependency '
+                'root folder either using the datafolder argument or by '
+                'setting the %s environment variable.' % CONLL2017_FOLDER)
+        self.lang_folders = dict()
+        self.name = 'CONLL-2017'
+        found = False
+        for lang_folder in os.listdir(self.datafolder):
+            match = re.match(self.LANG_FOLDER_REGEX, lang_folder)
+            if match:
+                lang = match.groupdict()['lang']
+                self.lang_folders[lang] = lang_folder
+                found = True
+        if not found:
+            raise ValueError('No UD language folders '
+                             'found in dir %s' % self.datafolder)
+
+    def __repr__(self):
+        return ('<CONLL2017Loader object from folder %s with %d languages>'
+                % (self.datafolder, len(self.langs)))
+
+    def load_train_dev(self, lang, verbose=False):
         p = os.path.join(self.datafolder, self.lang_folders[lang])
         train_filename = [fn for fn in os.listdir(p) 
                         if fn.endswith(self.TRAIN_SUFFIX)]
         if train_filename:
             train_filename = train_filename[0]
             train_path = os.path.join(p, train_filename)
-            dataset = self.load_conllu(train_path) 
-            dataset.lang = lang
-            dataset.name = os.path.basename(self.datafolder)
+            train = Dataset(UDepLoader.load_conllu_sents(train_path),
+                            lang=lang, name=self.name)
             if verbose:
-                print('Loaded %d sentences from %s' % (len(dataset), train_path))
-            return dataset
+                print('Loaded %d sentences from %s' % (len(train), train_path))
         else:
             raise ValueError("Couldn't find a %s file for %s"
                              % (lang, self.TRAIN_SUFFIX))
-
-    def load_dev(self, lang, verbose=False):
-        p = os.path.join(self.datafolder, self.lang_folders[lang])
         dev_filename = [fn for fn in os.listdir(p) 
                         if fn.endswith(self.DEV_SUFFIX)]
         if dev_filename:
             dev_filename = dev_filename[0]
             dev_path = os.path.join(p, dev_filename)
-            dataset = self.load_conllu(dev_path) 
-            dataset.lang = lang
-            dataset.name = os.path.basename(self.datafolder)
+            dev = Dataset(UDepLoader.load_conllu_sents(dev_path),
+                          lang=lang, name=self.name)
             if verbose:
-                print('Loaded %d sentences from %s' % (len(dataset), dev_path))
-            return dataset
+                print('Loaded %d sentences from %s' % (len(dev), dev_path))
         else:
             raise ValueError("Couldn't find a %s file for %s"
                              % (lang, self.DEV_SUFFIX))
+        return train, dev
 
     @property
     def langs(self):
