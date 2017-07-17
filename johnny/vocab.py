@@ -144,7 +144,7 @@ class UPOSVocab(object):
         self.index = dict((key, index) for index, key in enumerate(self.tags))
 
     def __repr__(self):
-        return ('UPOSVocab object\nnum tags: %d\n' % (len(self), self.use_unk))
+        return ('UPOSVocab object\nnum tags: %d\n' % len(self))
 
     def __len__(self):
         return len(self.index)
@@ -212,7 +212,7 @@ class UDepVocab(object):
         self.index = dict((key, index) for index, key in enumerate(self.tags))
 
     def __repr__(self):
-        return ('UDepVocab object\nnum tags: %d' % (len(self), self.use_unk))
+        return ('UDepVocab object\nnum tags: %d' % len(self))
 
     def __len__(self):
         return len(self.index)
@@ -222,4 +222,28 @@ class UDepVocab(object):
 
     def encode(self, tags):
         """tags : iterable of tags """
+        return tuple(self.index[tag] for tag in tags)
+
+
+class AbstractVocab(object):
+    """Used when we don't know what labels to expect"""
+
+    def __init__(self):
+        super(AbstractVocab, self).__init__()
+        self.index = dict()
+
+    def __repr__(self):
+        return ('AbstractVocab object\nnum tags: %d' % (len(self)))
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, key):
+        return self.index[key]
+
+    def encode(self, tags):
+        """tags : iterable of tags """
+        for tag in tags:
+            if tag not in self.index:
+                self.index[tag] = len(self.index)
         return tuple(self.index[tag] for tag in tags)
