@@ -6,13 +6,8 @@ import json
 import re
 import numpy as np
 from itertools import chain
-from johnny import CONLL2006_FOLDER, CONLL2017_FOLDER
 
 # TODO : compare what we get from this loader with what we get from CONLL script
-
-# TODO: Write pad method - add END to word sequences.
-# TODO: Training set representation - change db model to not include class for Model
-ROOT_REPR = '__ROOT__'
 
 
 def py2repr(f):
@@ -228,19 +223,23 @@ class Token(object):
 class UDepLoader(object):
     """Loader for universal dependencies datasets"""
 
-    AVAILABLE_LOADERS = ['CONLL-2017', 'CONLL-2006']
+    AVAILABLE_LOADERS = ['CONLL2017', 'CONLL2006']
 
     def __init__(self, name, **kwargs):
-        if name == 'CONLL-2017':
-            self.loader = CONLL2017Loader(**kwargs)
-        elif name == 'CONLL-2006':
-            self.loader = CONLL2006Loader(**kwargs)
+        if name.startswith('CONLL2017'):
+            self.loader = CONLL2017Loader(name, **kwargs)
+        elif name.startswith('CONLL2006'):
+            self.loader = CONLL2006Loader(name, **kwargs)
         else:
-            raise ValueError('Unknown loader, name is not in %s'
-                             % self.AVAILABLE_LOADERS)
+            raise ValueError('Unknown loader, name does not start with '
+                    'one of %s' % self.AVAILABLE_LOADERS)
 
     def load_train_dev(self, lang, verbose=False):
         return self.loader.load_train_dev(lang, verbose=verbose)
+
+    @staticmethod
+    def get_env_var(name):
+        return '%s_FOLDER' % name
 
     @staticmethod
     def load_conllu_sents(path):
@@ -268,16 +267,17 @@ class UDepLoader(object):
 
 class CONLL2006Loader(object):
 
-    def __init__(self, datafolder=None, train_percentage=0.8):
+    def __init__(self, name, datafolder=None, train_percentage=0.8):
         super(CONLL2006Loader, self).__init__()
         try:
-            self.datafolder = datafolder or os.environ[CONLL2006_FOLDER]
+            env_var = UDepLoader.get_env_var(name)
+            self.datafolder = datafolder or os.environ[env_var]
         except KeyError:
             raise ValueError('You need to specify the path to the universal dependency '
                 'root folder either using the datafolder argument or by '
-                'setting the %s environment variable.' % CONLL2006_FOLDER)
+                'setting the %s environment variable.' % env_var)
         self.train_percentage = train_percentage
-        self.name = 'CONLL-2006'
+        self.name = name
         file_path = os.path.join(self.datafolder, '*', '*', '*', '*', '*', '*.conll')
         file_paths = [f for f in glob.glob(file_path)]
         self.train_map = dict((os.path.basename(f).split('_', 1)[0], f)
@@ -320,16 +320,17 @@ class CONLL2017Loader(object):
     TRAIN_SUFFIX = 'ud-train.conllu'
     DEV_SUFFIX = 'ud-dev.conllu'
 
-    def __init__(self, datafolder=None):
+    def __init__(self, name, datafolder=None):
         super(CONLL2017Loader, self).__init__()
         try:
-            self.datafolder = datafolder or os.environ[CONLL2017_FOLDER]
+            env_var = UDepLoader.get_env_var(name)
+            self.datafolder = datafolder or os.environ[env_var]
         except KeyError:
             raise ValueError('You need to specify the path to the universal dependency '
                 'root folder either using the datafolder argument or by '
-                'setting the %s environment variable.' % CONLL2017_FOLDER)
+                'setting the %s environment variable.' % env_var)
         self.lang_folders = dict()
-        self.name = 'CONLL-2017'
+        self.name = name
         found = False
         for lang_folder in os.listdir(self.datafolder):
             match = re.match(self.LANG_FOLDER_REGEX, lang_folder)
