@@ -81,7 +81,7 @@ class SubwordEmbedder(chainer.Chain):
         return act
 
 
-class Encoder(chainer.Chain):
+class SentenceEncoder(chainer.Chain):
     """Encodes a sentence word by word using a recurrent neural network."""
 
 
@@ -90,7 +90,7 @@ class Encoder(chainer.Chain):
     def __init__(self, embedder, use_bilstm=True, num_layers=1,
                  num_units=100, dropout=0.2):
 
-        super(Encoder, self).__init__()
+        super(SentenceEncoder, self).__init__()
         with self.init_scope():
             self.embedder = embedder
             # we already have sorted input, so we removed the code that permutes
@@ -194,17 +194,16 @@ class Encoder(chainer.Chain):
             # Remember to clear cache
             self.embedder.word_encoder.clear_cache()
 
-        # encoding of tokens at i padded to batch_size
-        # returns max_seq_len x batch_size x num_units
+        # returns 2d (batch_size x max_sentence_length) x num_hidden
         return states
 
 
-class LSTMSubwordEncoder(chainer.Chain):
+class LSTMWordEncoder(chainer.Chain):
 
     def __init__(self, vocab_size, num_units, num_layers,
                  inp_dropout=0.2, rec_dropout=0.2, use_bilstm=True):
 
-        super(LSTMSubwordEncoder, self).__init__()
+        super(LSTMWordEncoder, self).__init__()
         with self.init_scope():
             self.embed_layer = L.EmbedID(vocab_size, num_units,
                                          ignore_label=CHAINER_IGNORE_LABEL)
@@ -251,7 +250,7 @@ class LSTMSubwordEncoder(chainer.Chain):
         self.cache = dict()
 
 
-class CNNSubwordEncoder(chainer.Chain):
+class CNNWordEncoder(chainer.Chain):
 
     FILTER_MULTIPLIER = 25
     IGNORE_LABEL = -1
@@ -259,7 +258,7 @@ class CNNSubwordEncoder(chainer.Chain):
     def __init__(self, vocab_size, embed_units=15, num_highway_layers=1,
                  inp_dropout=0.2, ngrams=(1, 2, 3, 4, 5, 6), stride=1, num_filters=None):
 
-        super(CNNSubwordEncoder, self).__init__()
+        super(CNNWordEncoder, self).__init__()
         if num_filters is None:
             # http://www.people.fas.harvard.edu/~yoonkim/data/char-nlm.pdf
             # Table 2 small model uses constant size

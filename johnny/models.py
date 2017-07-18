@@ -66,6 +66,15 @@ class GraphParser(chainer.Chain):
 
         calc_loss = sorted_heads is not None
 
+        # In order to predict which head is most probable for a given word
+        # For each token in the sentence we get a vector represention
+        # for that token as a head, and another for that token as a dependent.
+        # The idea here is that we only need to calculate these once
+        # and then reuse them to get all combinations
+        # ------------------------------------------------------
+        # In g(a_j, a_i) we note that we can precompute the matrix multiplications
+        # for each word, we consider all possible heads
+        # we can pre-calculate U * a_j , for all a_j
         # head activations for each token lstm activation
         h_arc = self.H_arc(sent_states)
         # we transform results to be indexable by sentence index for upcoming for loop
@@ -208,7 +217,7 @@ class GraphParser(chainer.Chain):
         # The longest sentences in tokens need to be at the beginning of the
         # list, since chainer will simply not update the states corresponding
         # to the smallest sentences that have 'run out of tokens'.
-        # We keep the permutation indices in order to reshuffle the output states,
+        # We keep the permutation indices in order to reorder the output states,
         # since we want to map the activations to the inputs.
         perm_indices, sorted_batch = zip(*sorted(enumerate(zip(*inputs)),
                                                  key=lambda x: len(x[1][0]),
@@ -220,28 +229,13 @@ class GraphParser(chainer.Chain):
         else:
             sorted_heads, sorted_labels = None, None
 
-        f_sents = sorted_inputs[0]
-        batch_size = len(f_sents)
-        max_sent_len = len(f_sents[0])
-
-        # comb states is batch_size x sentence_length x lstm_units
-        comb_states = self.encoder(*sorted_inputs)
-        # In order to predict which head is most probable for a given word
-        # For each token in the sentence we get a vector represention
-        # for that token as a head, and another for that token as a dependent.
-        # The idea here is that we only need to calculate these once
-        # and then reuse them to get all combinations
-        # ------------------------------------------------------
-        # In g(a_j, a_i) we note that we can precompute the matrix multiplications
-        # for each word, we consider all possible heads
-        # we can pre-calculate U * a_j , for all a_j
-        # reshape to 2D to calculate matrix multiplication
-        comb_states_2d = F.reshape(comb_states,
-                (-1, self.encoder.num_units * self.unit_mult))
+        comb_states_2d = self.encoder(*sorted_inputs)
 
         self.loss = 0
 
-        batch_stats = (batch_size, max_sent_len, self.encoder.col_lengths)
+        batch_stats = (self.encoder.batch_size,
+                       self.encoder.max_seq_len,
+                       self.encoder.col_lengths)
 
         if calc_loss:
             # NOTE: We need the heads variables both in predict heads & labels
