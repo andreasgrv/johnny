@@ -146,9 +146,7 @@ class Sentence(object):
 
     @property
     def words(self):
-        words = [ROOT_REPR]
-        words.extend([t.form for t in self.tokens])
-        return words
+        return tuple(t.form for t in self.tokens)
 
     @property
     def heads(self):
@@ -160,15 +158,11 @@ class Sentence(object):
 
     @property
     def upostags(self):
-        tags = [ROOT_REPR]
-        tags.extend([t.upostag for t in self.tokens])
-        return tags
+        return tuple(t.upostag for t in self.tokens)
 
     @property
     def xpostags(self):
-        tags = [ROOT_REPR]
-        tags.extend([t.xpostag for t in self.tokens])
-        return tags
+        return tuple(t.xpostag for t in self.tokens)
 
     @property
     def arc_lengths(self):
@@ -272,6 +266,7 @@ class CONLL2006Loader(object):
         try:
             env_var = UDepLoader.get_env_var(name)
             self.datafolder = datafolder or os.environ[env_var]
+            assert(os.path.isdir(self.datafolder))
         except KeyError:
             raise ValueError('You need to specify the path to the universal dependency '
                 'root folder either using the datafolder argument or by '

@@ -5,6 +5,7 @@ import chainer.functions as F
 import chainer.links as L
 import chainer.links.connection.n_step_lstm as chainer_nstep
 from johnny.extern import NStepLSTMBase
+from johnny.vocab import augment_seq, augment_seq_nested, augment_word, reserved
 
 CHAINER_IGNORE_LABEL = -1
 
@@ -120,20 +121,20 @@ class SentenceEncoder(chainer.Chain):
         """
         # NOTE: This function only encodes up to what is considered to be
         # the maximum sequence length of the encoder [the 0 index sequence].
+        max_seq_len = len(seqs[0])
         if create_var:
             batch = [chainer.Variable(self.xp.array([sent[i]
                                                     for sent in seqs
                                                     if i < len(sent)],
                                       dtype=self.xp.int32))
-                     for i in range(self.max_seq_len)]
+                     for i in range(max_seq_len)]
         else:
             batch = [self.xp.array([sent[i]
                                     for sent in seqs
                                     if i < len(sent)],
                                    dtype=self.xp.int32)
-                     for i in range(self.max_seq_len)]
+                     for i in range(max_seq_len)]
         return batch
-
 
     def __call__(self, *in_seqs):
         """Creates lstm embedding of the sentence and pos tags.
@@ -144,7 +145,8 @@ class SentenceEncoder(chainer.Chain):
         sents = in_seqs[0]
         # all sequences in in_seqs are assumed to have length corresponding
         # to in_seqs[0]
-        self.max_seq_len = len(sents[0])
+        # we add 1 because we are augmenting the sentence with a ROOT symbol 
+        self.max_seq_len = len(sents[0]) + 1
         self.batch_size = len(sents)
 
         # before we modify input we check if our embedder handles subword
@@ -154,36 +156,86 @@ class SentenceEncoder(chainer.Chain):
         # batch). We assume the subword tokens are passed in a 3D array
         # as in_seqs[0] -> sentences x words in sentence x tokens in words
         if getattr(self.embedder, 'is_subword', False):
-            # we need to modify in_seqs
-            in_seqs = list(in_seqs)
+            # pad each word with START_WORD END_WORD
+            sents = tuple(tuple(map(augment_word, s)) for s in sents)
             # unique list of words sorted from longest to shortest
             word_set = set(chain.from_iterable(sents))
+            # also include the sentence level markers
+            # as single words [token]
+            word_set.update([(reserved.START_SENTENCE,),
+                             (reserved.END_SENTENCE,),
+                             (reserved.ROOT,)])
             word_encoder = self.embedder.word_encoder
             word_encoder.encode_words(word_set)
             # replace 3D input with 2D - words replaced with hash
-            in_seqs[0] = tuple(tuple(map(word_encoder.word_to_index, s)) for s in sents)
-
-        # turn batch_size x seq_len -> seq_len x batch_size
-        # NOTE: seq_len is variable - we aren't padding
-        fwd = [self.transpose_batch(seq) for seq in in_seqs]
+            fwd_first = tuple(tuple(map(word_encoder.word_to_index,
+                                        augment_seq_nested(s)))
+                              for s in sents)
+            fwd_rest = [self.transpose_batch(tuple(map(augment_seq, seq)))
+                        for seq in in_seqs[1:]]
+            fwd = [self.transpose_batch(fwd_first)]
+            fwd.extend(fwd_rest)
+        else:
+            # we augment sequence here - augmenting with START, ROOT at the
+            # beginning and END at the you know where
+            # turn batch_size x seq_len -> seq_len x batch_size
+            # NOTE: seq_len is variable - we aren't padding
+            fwd = [self.transpose_batch(tuple(map(augment_seq, seq)))
+                   for seq in in_seqs]
 
         # collapse all ids into a vector
         embeddings = self.embedder(*(F.concat(f, axis=0) for f in fwd))
 
-        self.col_lengths = [len(col) for col in fwd[0]]
+        col_lengths = [len(col) for col in fwd[0]]
 
         # use np because cumsum crashes gpu - I know, right?
-        self.batch_split = np.cumsum(self.col_lengths[:-1])
+        batch_split = np.cumsum(col_lengths[:-1])
         # split back to batch size
-        batch_embeddings = F.split_axis(embeddings, self.batch_split, axis=0)
+        batch_embeddings = F.split_axis(embeddings, batch_split, axis=0)
 
         _, _, states = self.rnn(None, None, batch_embeddings)
 
-        states = F.vstack((F.pad(s,
-                                 ((0, self.batch_size - len(s)), (0,0)),
-                                 'constant',
-                                 constant_values=0.)
-                           for s in states))
+        # we don't use the START and END encoded states in attention
+        # so we get rid of them from states and col_lengths
+        # also creates col_lengths
+        # states = self.deaugment(states)
+        keep = list()
+        self.col_lengths = []
+        # END tokens are spread out across the matrix since
+        # we have variable length inputs (sorted)
+        # eg:  S R 1 2 3 4 E     We want to get rid of S and E without
+        #      S R 5 6 E         transposing and stuff (we want to keep
+        #      S R 7 E           the root embedding R)
+        #
+        # to:  1 2 3 4
+        #      5 6
+        #      7
+        states = list(states)
+        for i in range(1, len(states) - 1):
+            # if the next column is shorter, it means that in the original
+            # data this column was shorter. If not clear imagine a layer of
+            # blocks falling when playing tetris.
+            diff = len(states[i]) - len(states[i+1])
+            if diff > 0:
+                clean = states[i][:-diff]
+            else:
+                clean = states[i]
+            col_len = len(clean)
+            self.col_lengths.append(col_len)
+            keep.append(F.pad(clean,
+                              ((0, self.batch_size - col_len), (0,0)),
+                              'constant',
+                              constant_values=0.))
+        states = F.vstack(keep)
+        # discard first and last column. The first column always contains
+        # START. The last column contains only END but END tokens are
+        # spread throughout.
+
+        # states = F.vstack((F.pad(s,
+        #                          ((0, self.batch_size - len(s)), (0,0)),
+        #                          'constant',
+        #                          constant_values=0.)
+        #                    for s in states))
 
         mask_shape = (self.batch_size, self.max_seq_len)
         self.mask = self.xp.ones(mask_shape, dtype=self.xp.bool_)

@@ -1,8 +1,45 @@
 import six
 import pickle
+from itertools import chain
 from collections import Counter, namedtuple
-from johnny.dep import ROOT_REPR
-# RESERVED = dict(ROOT=0, START=1, END=2)
+
+
+# We reserve these indexes in all vocabs we create
+# they aren't always needed but it simplifies our work
+RESERVED = dict(START_SENTENCE=0,
+                END_SENTENCE=1,
+                ROOT=2,
+                START_WORD=3,
+                END_WORD=4)
+
+reserved = namedtuple('Reserved', RESERVED.keys())(**RESERVED)
+
+
+def augment_seq_nested(seq):
+    # when we pad sentence that has been encoded on the subword level
+    # we insert the index into a list so that it can be encoded
+    # on the subword level - we don't want to have to deal with this
+    # as a special case and encode 3 tokens on the word level!
+    return tuple(chain(
+            ([reserved.START_SENTENCE],),
+            ([reserved.ROOT],),
+            seq,
+            ([reserved.END_SENTENCE],)))
+
+
+def augment_seq(seq):
+    return tuple(chain(
+            (reserved.START_SENTENCE,),
+            (reserved.ROOT,),
+            seq,
+            (reserved.END_SENTENCE,)))
+
+
+def augment_word(seq):
+    return tuple(chain(
+            (reserved.START_WORD,),
+            seq,
+            (reserved.END_WORD,)))
 
 
 class Vocab(object):
@@ -20,7 +57,8 @@ class Vocab(object):
     have stocks in any companies producing ram chips.
     """
 
-    special = dict(UNK=0, START=1, END=2)
+    special = dict(**RESERVED)
+    special.update(UNK=len(special))
     reserved = namedtuple('Reserved', special.keys())(**special)
 
     def __init__(self, size=None, out_size=None, counts=None, threshold=0):
@@ -70,7 +108,7 @@ class Vocab(object):
                             key=lambda x: (x[1], x[0]), reverse=True)
         limit = self.size
         offset = len(self.reserved)
-        # we leave the 0 index to represent the UNK
+        # we leave reserved indices to represent the UNK and the rest
         keep = candidates[:limit]
         if keep:
             keys, _ = zip(*keep)
@@ -86,16 +124,11 @@ class Vocab(object):
         for key in remove:
             self.counts.pop(key)
 
-    def encode(self, tokens, with_start=False, with_end=False):
+    def encode(self, tokens):
         """tokens: iterable of tokens to get indices for.
         returns list of indices.
         """
-        # We may insert START and END tokens before and after the
-        # encoded sequence according to passed params
-        return (((self.reserved.START,) if with_start else ()) +
-                tuple(self.index.get(token, self.reserved.UNK)
-                      for token in tokens) +
-                ((self.reserved.END,) if with_end else ()))
+        return tuple(self.index.get(token, self.reserved.UNK) for token in tokens)
 
     def save(self, filepath):
         with open(filepath, 'wb') as f:
@@ -140,7 +173,8 @@ class UPOSVocab(object):
 
     def __init__(self):
         super(UPOSVocab, self).__init__()
-        self.tags = self.TAGS + [ROOT_REPR]
+        self.tags = list(RESERVED.keys())
+        self.tags.extend(self.TAGS)
         self.index = dict((key, index) for index, key in enumerate(self.tags))
 
     def __repr__(self):
@@ -228,9 +262,10 @@ class UDepVocab(object):
 class AbstractVocab(object):
     """Used when we don't know what labels to expect"""
 
-    def __init__(self):
+    def __init__(self, with_reserved=True, mutable=True):
         super(AbstractVocab, self).__init__()
-        self.index = dict()
+        self.index = dict(**RESERVED) if with_reserved else dict()
+        self.mutable = mutable
 
     def __repr__(self):
         return ('AbstractVocab object\nnum tags: %d' % (len(self)))
@@ -243,7 +278,21 @@ class AbstractVocab(object):
 
     def encode(self, tags):
         """tags : iterable of tags """
+        l = []
         for tag in tags:
-            if tag not in self.index:
-                self.index[tag] = len(self.index)
-        return tuple(self.index[tag] for tag in tags)
+            if self.mutable:
+                if tag not in self.index:
+                    self.index[tag] = len(self.index)
+            l.append(self.index[tag])
+        return tuple(l)
+
+    def save(self, filepath):
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cl, filepath):
+        with open(filepath, 'rb') as f:
+            v = pickle.load(f)
+            v.mutable = False
+            return v

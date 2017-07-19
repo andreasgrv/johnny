@@ -211,7 +211,7 @@ class GraphParser(chainer.Chain):
         labels = kwargs.get('labels', None)
 
         calc_loss = ((heads is not None) and (labels is not None))
-        input_sent_lengths = [len(sent) - 1 for sent in inputs[0]]
+        input_sent_lengths = [len(sent) for sent in inputs[0]]
         # in order to process batches of different sized sentences using LSTM in chainer
         # we need to sort by sentence length.
         # The longest sentences in tokens need to be at the beginning of the
@@ -239,6 +239,7 @@ class GraphParser(chainer.Chain):
 
         if calc_loss:
             # NOTE: We need the heads variables both in predict heads & labels
+            # heads are seq_len - 1 in length because they don't include ROOT
             sorted_heads = self.encoder.transpose_batch(sorted_heads)
 
         arcs = self._predict_heads(comb_states_2d, self.encoder.mask, batch_stats,
