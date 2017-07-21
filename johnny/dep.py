@@ -289,7 +289,8 @@ class CONLL2006Loader(object):
                 % (self.datafolder, len(self.langs)))
 
     def load_train_dev(self, lang, verbose=False):
-        p = self.train_map.get(lang, None)
+        # we convert to lowercase to make matching easier
+        p = self.train_map.get(lang.lower(), None)
         if p:
             sents = UDepLoader.load_conllu_sents(p) 
             num_sents = len(sents)

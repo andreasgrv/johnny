@@ -210,7 +210,6 @@ class SentenceEncoder(chainer.Chain):
         # to:  1 2 3 4
         #      5 6
         #      7
-        states = list(states)
         for i in range(1, len(states) - 1):
             # if the next column is shorter, it means that in the original
             # data this column was shorter. If not clear imagine a layer of

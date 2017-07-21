@@ -211,7 +211,6 @@ class GraphParser(chainer.Chain):
         labels = kwargs.get('labels', None)
 
         calc_loss = ((heads is not None) and (labels is not None))
-        input_sent_lengths = [len(sent) for sent in inputs[0]]
         # in order to process batches of different sized sentences using LSTM in chainer
         # we need to sort by sentence length.
         # The longest sentences in tokens need to be at the beginning of the
@@ -308,6 +307,8 @@ class GraphParser(chainer.Chain):
         lbls = lbls[inv_perm_indices]
 
         lbl_preds = np.argmax(lbls, axis=1)
+
+        input_sent_lengths = [len(sent) for sent in inputs[0]]
 
         arc_preds = [arc_p[:l] for arc_p, l in zip(arcs, input_sent_lengths)]
         lbl_preds = [lbl_p[:l] for lbl_p, l in zip(lbl_preds, input_sent_lengths)]
