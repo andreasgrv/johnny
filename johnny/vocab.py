@@ -10,10 +10,11 @@ RESERVED = dict(START_SENTENCE=0,
                 END_SENTENCE=1,
                 ROOT=2,
                 START_WORD=3,
-                END_WORD=4)
+                END_WORD=4,
+                PAD=5)
+
 
 reserved = namedtuple('Reserved', RESERVED.keys())(**RESERVED)
-
 
 def augment_seq_nested(seq):
     # when we pad sentence that has been encoded on the subword level
@@ -146,7 +147,7 @@ class Vocab(object):
 
 
 class UPOSVocab(object):
-    """ Universal dependencies part of speech tag vocabulary.
+    """ Universal dependencies part of speech tag vocabulary for version 2.
     Alphabetical listing
 
     ADJ: adjective

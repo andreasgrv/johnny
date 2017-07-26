@@ -251,8 +251,7 @@ class SentenceEncoder(chainer.Chain):
 
 class LSTMWordEncoder(chainer.Chain):
 
-    def __init__(self, vocab_size, num_units, num_layers,
-                 inp_dropout=0.2, rec_dropout=0.2, use_bilstm=True):
+    def __init__(self, vocab_size, num_units, num_layers, dropout=0.2, use_bilstm=True):
 
         super(LSTMWordEncoder, self).__init__()
         with self.init_scope():
@@ -261,16 +260,13 @@ class LSTMWordEncoder(chainer.Chain):
             self.rnn = chainer_nstep.NStepLSTMBase(num_layers,
                                                    num_units,
                                                    num_units,
-                                                   rec_dropout,
+                                                   dropout,
                                                    use_bi_direction=use_bilstm)
         self.vocab_size = vocab_size
         self.num_units = num_units
         self.num_layers = num_layers
-        self.inp_dropout = inp_dropout
-        self.rec_dropout = rec_dropout
+        self.dropout = dropout
         self.use_bilstm = use_bilstm
-        # self.add_link('out_fwd', L.Linear(num_units, num_units))
-        # self.add_link('out_bwd', L.Linear(num_units, num_units))
         self.out_size = num_units * 2 if self.use_bilstm else num_units
         self.cache = dict()
 
@@ -307,7 +303,7 @@ class CNNWordEncoder(chainer.Chain):
     IGNORE_LABEL = -1
 
     def __init__(self, vocab_size, embed_units=15, num_highway_layers=1,
-                 inp_dropout=0.2, ngrams=(1, 2, 3, 4, 5, 6), stride=1, num_filters=None):
+                 highway_dropout=0.0, ngrams=(1, 2, 3, 4, 5, 6), stride=1, num_filters=None):
 
         super(CNNWordEncoder, self).__init__()
         if num_filters is None:
@@ -330,11 +326,12 @@ class CNNWordEncoder(chainer.Chain):
                                        (ngrams[i], embed_units),
                                        stride))
             for name in self.highways:
-                setattr(self, name, L.Highway(out_size))
+                setattr(self, name, L.Highway(out_size, init_bt=-2))
         self.vocab_size = vocab_size
         self.embed_units = embed_units
         self.num_highway_layers = num_highway_layers
-        self.inp_dropout = inp_dropout
+        self.highway_dropout = highway_dropout
+        # highway doesn't change dimensionality
         self.out_size = out_size
         self.cache = dict()
 
@@ -348,8 +345,10 @@ class CNNWordEncoder(chainer.Chain):
 
         # split into parts - because there will be very few very long words
         # might as well pack them together to avoid wasting computation on padding
+        # NOTE: batch size here is number of words in each batch of encoder
+        # so for 32 batch size this can be 1000
         if batch_size > 40:
-            SPLIT_INDEX = int(0.05 * batch_size)
+            SPLIT_INDEX = int(0.1 * batch_size)
             batch_split = np.array_split(sorted_word_list, [SPLIT_INDEX])
         else:
             batch_split = [sorted_word_list]
@@ -361,7 +360,7 @@ class CNNWordEncoder(chainer.Chain):
             max_shard_word_length = len(shard[0])
             word_vars = F.concat([chainer.Variable(self.xp.array([w[i]
                                                    if i < len(w)
-                                                   else CHAINER_IGNORE_LABEL
+                                                   else reserved.PAD
                                                    for i in range(max_shard_word_length)],
                                                    dtype=self.xp.int32))
                                           for w in shard], axis=0)
@@ -386,8 +385,8 @@ class CNNWordEncoder(chainer.Chain):
             act = F.tanh(hs)
             # Don't apply dropout to last layer
             for highway in self.highways:
-                if self.inp_dropout > 0.:
-                    act = F.dropout(act, ratio=self.inp_dropout)
+                if self.highway_dropout > 0.:
+                    act = F.dropout(act, ratio=self.highway_dropout)
                 act = self[highway](act)
             if acts is None:
                 acts = act
