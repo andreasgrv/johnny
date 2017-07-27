@@ -326,6 +326,7 @@ class CNNWordEncoder(chainer.Chain):
                                        (ngrams[i], embed_units),
                                        stride))
             for name in self.highways:
+                # init_bt -2 used in Kim paper
                 setattr(self, name, L.Highway(out_size, init_bt=-2))
         self.vocab_size = vocab_size
         self.embed_units = embed_units
@@ -371,18 +372,30 @@ class CNNWordEncoder(chainer.Chain):
 
             stacked = F.expand_dims(stacked, axis=1)
             # for each in batch_embeddings:
-            hs = None
+            act = None
             for block in self.cnn_blocks:
                 h = self[block](stacked)
-                h = F.max_pooling_2d(h, (max_shard_word_length, self.embed_units))
-                # print(max_word_length, h.shape)
+                h = F.tanh(h)
+                # NOTE: batch_size is num_words in batch
+                # h shape : batch_size x num_filters x sent_len x 1
+                # =============================================================
+                # h = F.max_pooling_2d(h, (max_shard_word_length,
+                #                          self.embed_units))
+                # =============================================================
+                # NOTE: below max is max pooling over "time".
+                # we are practically only keeping the max over the sequence
+                # so we don't need to use the max pooling 2d function
+                # which is much slower (especially on cpu)
+                h = F.max(h, 2)
+                # collapse last dimension
                 h = F.squeeze(h)
-                if hs is None:
-                    hs = h
+                # h shape : batch_size x num_filters
+                if act is None:
+                    act = h
                 else:
-                    hs = F.concat([hs, h], axis=1)
+                    # stack ngram filter activations along num_filters axis
+                    act = F.concat([act, h], axis=1)
 
-            act = F.tanh(hs)
             # Don't apply dropout to last layer
             for highway in self.highways:
                 if self.highway_dropout > 0.:
