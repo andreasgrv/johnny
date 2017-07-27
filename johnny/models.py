@@ -24,8 +24,8 @@ class GraphParser(chainer.Chain):
                  num_labels=46,
                  mlp_arc_units=100,
                  mlp_lbl_units=100,
-                 arc_dropout=0.2,
-                 lbl_dropout=0.2,
+                 arc_dropout=0.0,
+                 lbl_dropout=0.5,
                  treeify='chu',
                  visualise=False,
                  debug=False

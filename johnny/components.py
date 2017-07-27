@@ -251,7 +251,8 @@ class SentenceEncoder(chainer.Chain):
 
 class LSTMWordEncoder(chainer.Chain):
 
-    def __init__(self, vocab_size, num_units, num_layers, dropout=0.2, use_bilstm=True):
+    def __init__(self, vocab_size, num_units, num_layers,
+                 inp_dropout=0.2, rec_dropout=0.2, use_bilstm=True):
 
         super(LSTMWordEncoder, self).__init__()
         with self.init_scope():
@@ -260,12 +261,13 @@ class LSTMWordEncoder(chainer.Chain):
             self.rnn = chainer_nstep.NStepLSTMBase(num_layers,
                                                    num_units,
                                                    num_units,
-                                                   dropout,
+                                                   rec_dropout,
                                                    use_bi_direction=use_bilstm)
         self.vocab_size = vocab_size
         self.num_units = num_units
         self.num_layers = num_layers
-        self.dropout = dropout
+        self.rec_dropout = rec_dropout
+        self.inp_dropout = inp_dropout
         self.use_bilstm = use_bilstm
         self.out_size = num_units * 2 if self.use_bilstm else num_units
         self.cache = dict()
@@ -281,6 +283,9 @@ class LSTMWordEncoder(chainer.Chain):
         word_vars = [chainer.Variable(self.xp.array(w, dtype=self.xp.int32))
                                       for w in word_list]
         embeddings = self.embed_layer(F.concat(word_vars, axis=0))
+
+        if self.inp_dropout > 0.:
+            embeddings = F.dropout(embeddings, ratio=self.inp_dropout)
 
         # split back to batch size
         batch_embeddings = F.split_axis(embeddings, batch_split, axis=0)
