@@ -266,6 +266,8 @@ class AbstractVocab(object):
     def __init__(self, with_reserved=True, mutable=True):
         super(AbstractVocab, self).__init__()
         self.index = dict(**RESERVED) if with_reserved else dict()
+        self.rev_index = dict((val, key) for key, val in RESERVED.items()) \
+                         if with_reserved else dict()
         self.mutable = mutable
 
     def __repr__(self):
@@ -283,7 +285,9 @@ class AbstractVocab(object):
         for tag in tags:
             if self.mutable:
                 if tag not in self.index:
-                    self.index[tag] = len(self.index)
+                    new_idx = len(self.index)
+                    self.index[tag] = new_idx
+                    self.rev_index[new_idx] = tag
             l.append(self.index[tag])
         return tuple(l)
 
