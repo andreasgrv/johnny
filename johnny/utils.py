@@ -2,7 +2,6 @@ import os
 import six
 import numpy as np
 import yaml
-import json
 import datetime
 from johnny import EXP_ENV_VAR
 
@@ -15,7 +14,7 @@ class BucketManager(six.Iterator):
 
 
     def __init__(self, data, bucket_width, max_len, min_len=1, batch_size=64,
-                 shuffle=True, right_leak=None, row_key=None):
+                 shuffle=True, right_leak=None, row_key=None, loop_forever=False):
         """
         data: a list of rows
 
@@ -42,6 +41,7 @@ class BucketManager(six.Iterator):
         self.right_leak = right_leak
         # by default we use the length of the first entry in the row to sort by
         self.row_key = row_key or (lambda x: len(x))
+        self.loop_forever = loop_forever
         self.batch_count = 0
         self.seq_count = 0
 
@@ -86,7 +86,11 @@ class BucketManager(six.Iterator):
             self.seq_count += len(data)
             return data
         else:
-            raise StopIteration
+            if self.loop_forever:
+                self.reset(self.shuffle)
+                return self.__next__()
+            else:
+                raise StopIteration
 
     def shuffle_bucket_contents(self):
         """Shuffles entries inside each bucket"""
