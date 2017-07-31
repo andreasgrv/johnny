@@ -6,6 +6,7 @@ import json
 import re
 import numpy as np
 from itertools import chain
+from collections import OrderedDict
 
 # TODO : compare what we get from this loader with what we get from CONLL script
 
@@ -54,6 +55,14 @@ class Dataset(object):
     @property
     def heads(self):
         return tuple(s.heads for s in self.sents)
+
+    @property
+    def lemmas(self):
+        return tuple(s.lemmas for s in self.sents)
+
+    @property
+    def feats(self):
+        return tuple(s.feats for s in self.tokens)
 
     @property
     def arctags(self):
@@ -113,7 +122,8 @@ class Sentence(object):
         # we are using this for dependency parsing
         # we don't care about multiword tokens or
         # repetition of words that won't be reflected in the sentence
-        self.tokens = tuple(token for token in tokens if token.head != -1) or tuple()
+        self.tokens = tuple(token for token in tokens
+                            if token.head != -1) or tuple()
 
     def __getitem__(self, index):
         return self.tokens[index]
@@ -153,6 +163,14 @@ class Sentence(object):
         return tuple(t.head for t in self.tokens)
 
     @property
+    def lemmas(self):
+        return tuple(t.lemma for t in self.tokens)
+
+    @property
+    def feats(self):
+        return tuple(t.feats for t in self.tokens)
+
+    @property
     def arctags(self):
         return tuple(t.deprel.split(':')[0] for t in self.tokens)
 
@@ -177,23 +195,58 @@ class Token(object):
     # in the conllu data - exact order
     CONLLU_ATTRS = ['id', 'form', 'lemma', 'upostag', 'xpostag',
                     'feats', 'head', 'deprel', 'deps', 'misc']
+    MORPH_SEP = '|'
+    MORPH_ASSIGN = '='
+    EMPTY = '_'
+    # artificial morph join when feats not in key value pair form
+    MORPH_FIX = ':'
 
     def __init__(self, *args):
         for i, prop in enumerate(args):
             label = Token.CONLLU_ATTRS[i]
-            if label in ['head']:
+            if label == 'head':
                 # some words have _ as head when they are a multitoken representation
                 # in that case replace with -1
-                setattr(self, Token.CONLLU_ATTRS[i], int(prop) if prop != '_' else -1)
+                setattr(self, Token.CONLLU_ATTRS[i], int(prop)
+                        if prop != self.EMPTY else -1)
+            elif label == 'feats':
+                if prop == self.EMPTY:
+                    morph_dict = OrderedDict()
+                else:
+                    # some conll-x languages have a|b|c feats
+                    # in that case we use the pos tag position of feat
+                    if self.MORPH_ASSIGN not in prop:
+                        morph_dict = OrderedDict(('%s%s%s' % (args[3],
+                                                       self.MORPH_FIX,
+                                                       i), m) 
+                            for i, m in enumerate(prop.split(self.MORPH_SEP)))
+                    else:
+                        morph_dict = OrderedDict(m.split(self.MORPH_ASSIGN) 
+                                for m in prop.split(self.MORPH_SEP))
+                setattr(self, Token.CONLLU_ATTRS[i], morph_dict)
             else:
                 setattr(self, Token.CONLLU_ATTRS[i], prop)
 
     @py2repr
     def __repr__(self):
-        return '\t'.join(six.text_type(getattr(self, attr)) for attr in Token.CONLLU_ATTRS)
+        return '\t'.join(six.text_type(getattr(self, attr))
+                         for attr in Token.CONLLU_ATTRS)
 
     def __str__(self):
-        return '\t'.join(six.text_type(getattr(self, attr)) for attr in Token.CONLLU_ATTRS)
+        return '\t'.join(six.text_type(self.serialize(attr))
+                         for attr in Token.CONLLU_ATTRS)
+
+    def serialize(self, attr):
+        value = getattr(self, attr)
+        if attr == 'feats':
+            if value:
+                value = self.MORPH_SEP.join(self.MORPH_ASSIGN.join((key, val))
+                                            if self.MORPH_FIX not in key else val
+                                            for key, val in value.items())
+            else:
+                value = self.EMPTY
+        return value
+
     
     def displacy_word(self, universal_pos=True):
         """ return a dictionary that matches displacy format """
@@ -217,12 +270,15 @@ class Token(object):
 class UDepLoader(object):
     """Loader for universal dependencies datasets"""
 
-    AVAILABLE_LOADERS = ['CONLL2017', 'CONLL2006']
+    CONLL2017 = 'CONLL2017'
+    CONLL2006 = 'CONLL2006'
+    AVAILABLE_LOADERS = [CONLL2017,
+                         CONLL2006]
 
     def __init__(self, name, **kwargs):
-        if name.startswith('CONLL2017'):
+        if name.startswith(self.CONLL2017):
             self.loader = CONLL2017Loader(name, **kwargs)
-        elif name.startswith('CONLL2006'):
+        elif name.startswith(self.CONLL2006):
             self.loader = CONLL2006Loader(name, **kwargs)
         else:
             raise ValueError('Unknown loader, name does not start with '
