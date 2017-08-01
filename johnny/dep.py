@@ -317,7 +317,7 @@ class UDepLoader(object):
 
 class CONLL2006Loader(object):
 
-    def __init__(self, name, datafolder=None, train_percentage=0.8):
+    def __init__(self, name, datafolder=None, train_percentage=0.95):
         super(CONLL2006Loader, self).__init__()
         try:
             env_var = UDepLoader.get_env_var(name)
