@@ -349,6 +349,13 @@ class CONLL2006Loader(object):
         p = self.train_map.get(lang.lower(), None)
         if p:
             sents = UDepLoader.load_conllu_sents(p) 
+            # keep old state - we want the shuffling not to 
+            # change whenever we change the seed
+            rand_state = np.random.get_state()
+            np.random.seed(62)
+            np.random.shuffle(sents)
+            # restore the state
+            np.random.set_state(rand_state)
             num_sents = len(sents)
             split_index = int(num_sents * self.train_percentage)
             train = Dataset(sents[:split_index], lang=lang, name=self.name)
