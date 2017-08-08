@@ -5,10 +5,9 @@ import codecs
 import json
 import re
 import numpy as np
+import heapq
 from itertools import chain
-from collections import OrderedDict
-
-# TODO : compare what we get from this loader with what we get from CONLL script
+from collections import OrderedDict, defaultdict
 
 
 def py2repr(f):
@@ -84,6 +83,18 @@ class Dataset(object):
     def arc_lengths(self):
         return tuple(chain(*[sent.arc_lengths for sent in self.sents]))
 
+    def compute_token_ratios(self):
+        # TODO: make this more efficient
+        all_words = list(chain.from_iterable(s.words for s in self.sents))
+        self.num_words = len(all_words)
+        all_lemmas = list(chain.from_iterable(s.lemmas for s in self.sents))
+        distinct_words = set(all_words)
+        distinct_lemmas = set(all_lemmas)
+        self.num_types = len(distinct_words)
+        self.num_lemmas = len(distinct_lemmas)
+        self.type_to_token_ratio = float(self.num_types)/self.num_words
+        self.lemma_to_token_ratio = float(self.num_lemmas)/self.num_words
+
     @property
     def len_stats(self):
         sent_lens = self.sent_lengths
@@ -113,6 +124,14 @@ class Dataset(object):
         stats = dict(**self.len_stats)
         stats.update(**self.arc_len_stats)
         stats['num_sents'] = len(self)
+        self.compute_token_ratios()
+        stats['num_words'] = self.num_words
+        stats['num_types'] = self.num_types
+        stats['num_lemmas'] = self.num_lemmas
+        stats['type_to_token_ratio'] = self.type_to_token_ratio
+        stats['lemma_to_token_ratio'] = self.lemma_to_token_ratio
+        num_projective = sum(s.is_projective() for s in self.sents)
+        stats['percentage_projective'] = float(num_projective)/len(self.sents)
         return stats
 
 
@@ -153,6 +172,57 @@ class Sentence(object):
     def set_labels(self, labels):
         for t, l in zip(self.tokens, labels):
             t.deprel = l
+
+    def is_projective(self):
+        """Check if this tree is projective """
+        LEVEL_MARKER = -42 # why not?
+        # parent to child map (don't need to use ids,
+        # could use enumerate, but just in case there
+        # is something particular with the ids..)
+        p2c_map = defaultdict(list)
+        for p, c in zip(self.heads, range(1, len(self.heads)+1)):
+            p2c_map[p].append(c)
+        visited = set()
+        # I am (g)Rooooot!
+        children = p2c_map[0]
+        yield_stack = [[]]
+        while children:
+            child = children.pop()
+            if child in visited:
+                raise Exception('Cycle detected')
+            # if we hit LEVEL_MARKER we are done processing a subtree
+            # we therefore make sure the yield of the node has no gaps
+            # if it does, the sentence is not projective
+            if child == LEVEL_MARKER:
+                node_yield = yield_stack.pop()
+                node_yield = [heapq.heappop(node_yield) 
+                              for i in range(len(node_yield))]
+                prev = node_yield[0]
+                for nxt in node_yield[1:]:
+                    if nxt != (prev + 1):
+                        return False
+                    prev = nxt
+                # if we made it to here, we merge the sorted lower subtree yield
+                # with the nodes we had explored before visiting the subtree
+                yield_stack[-1] = [heapq.heappop(yield_stack[-1])
+                                   for i in range(len(yield_stack[-1]))]
+                yield_stack[-1] = list(heapq.merge(yield_stack[-1], node_yield))
+                # print(yield_stack)
+                continue
+            more_children = p2c_map[child]
+            if more_children:
+                # add a marker to know when we are done with the subtree
+                children.append(LEVEL_MARKER)
+                yield_stack.append([])
+                children.extend(more_children)
+            visited.add(child)
+            heapq.heappush(yield_stack[-1], child)
+            # print('heapq-push', child, yield_stack)
+        return True
+
+    @property
+    def ids(self):
+        return tuple(t.id for t in self.tokens)
 
     @property
     def words(self):
