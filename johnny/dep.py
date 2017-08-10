@@ -91,6 +91,14 @@ class Dataset(object):
         for s in self.sents:
             s.unset_labels()
 
+    def unset_deps(self):
+        for s in self.sents:
+            s.unset_deps()
+
+    def unset_misc(self):
+        for s in self.sents:
+            s.unset_misc()
+
     def compute_token_ratios(self):
         # TODO: make this more efficient
         all_words = list(chain.from_iterable(s.words for s in self.sents))
@@ -188,6 +196,14 @@ class Sentence(object):
     def unset_labels(self):
         for t in self.tokens:
             t.deprel = None
+
+    def unset_deps(self):
+        for t in self.tokens:
+            t.deps = None
+
+    def unset_misc(self):
+        for t in self.tokens:
+            t.misc = None
 
     def is_projective(self):
         """Check if this tree is projective """
