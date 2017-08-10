@@ -44,7 +44,7 @@ class Dataset(object):
     def save(self, path):
         with codecs.open(path, 'w', encoding='utf-8') as inp:
             for sent in self:
-                s = '%s\n\n' % '\n'.join(str(t) for t in sent)
+                s = '%s\n\n' % '\n'.join(str(t) for t in sent.all_tokens)
                 inp.write(s)
 
     @property
@@ -154,9 +154,11 @@ class Dataset(object):
 class Sentence(object):
 
     def __init__(self, tokens=None):
+        # keep all_tokens only for serialisation purposes
         # we are using this for dependency parsing
         # we don't care about multiword tokens or
         # repetition of words that won't be reflected in the sentence
+        self.all_tokens = tuple(tokens)
         self.tokens = tuple(token for token in tokens
                             if token.head != -1) or tuple()
 
