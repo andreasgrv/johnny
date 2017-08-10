@@ -119,8 +119,6 @@ class SentenceEncoder(chainer.Chain):
 
         [[1,2,3], [4,5], [6]] -> [[1,4,6],[2,5],[3]]
         """
-        # NOTE: This function only encodes up to what is considered to be
-        # the maximum sequence length of the encoder [the 0 index sequence].
         max_seq_len = len(seqs[0])
         if create_var:
             batch = [chainer.Variable(self.xp.array([sent[i]

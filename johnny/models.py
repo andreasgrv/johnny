@@ -251,15 +251,33 @@ class GraphParser(chainer.Chain):
             # TODO: check multiple roots issue
             # We process the head scores to apply tree constraints
             arcs = cuda.to_cpu(arcs.data)
-            # DependencyDecoder expects a square matrix - fill root col with zeros
-            pd_arcs = np.pad(arcs, ((0, 0), (0, 0), (1, 0)), 'constant')
+            # arcs are batch_size x sent_len + 1 x sent_len
+            # axis 1 has the scores over the sentence
+            # axis 2 is one shorter because we don't predict for root
             dd = DependencyDecoder()
+            # sent length not taking root into account
+            sent_lengths = [len(sent) for sent in sorted_inputs[0]]
+            arc_preds = []
             if self.treeify == 'chu':
                 # Just remove cycles, non-projective trees are ok
-                arc_preds = np.array([dd.parse_nonproj(each)[1:] for each in pd_arcs])
+                for l, score_mat in zip(sent_lengths, arcs):
+                    # remove fallout from batch size
+                    trunc_score_mat = score_mat[:l+1, :l]
+                    # DependencyDecoder expects a square matrix - fill root col with zeros
+                    trunc_score_mat = np.pad(trunc_score_mat, ((0, 0), (1, 0)), 'constant')
+                    nproj_arcs = dd.parse_nonproj(trunc_score_mat)[1:]
+                    arc_preds.append(nproj_arcs)
+
+                # arc_preds = np.array([dd.parse_nonproj(each)[1:] for each in pd_arcs])
             elif self.treeify == 'eisner':
                 # Remove cycles and make sure trees are projective
-                arc_preds = np.array([dd.parse_proj(each)[1:] for each in pd_arcs])
+                for l, score_mat in zip(sent_lengths, arcs):
+                    # remove fallout from batch size
+                    trunc_score_mat = score_mat[:l+1, :l]
+                    # DependencyDecoder expects a square matrix - fill root col with zeros
+                    trunc_score_mat = np.pad(trunc_score_mat, ((0, 0), (1, 0)), 'constant')
+                    proj_arcs = dd.parse_proj(trunc_score_mat)[1:]
+                    arc_preds.append(proj_arcs)
             else:
                 raise ValueError('Unexpected method')
             p_arcs = self.encoder.transpose_batch(arc_preds, create_var=False)
@@ -303,7 +321,8 @@ class GraphParser(chainer.Chain):
         if self.debug:
             self.arcs = self.arcs[inv_perm_indices]
         # permute back to correct batch order
-        arcs = arc_preds[inv_perm_indices]
+        # arcs = arc_preds[inv_perm_indices]
+        arcs = [arc_preds[i] for i in inv_perm_indices]
         lbls = lbls[inv_perm_indices]
 
         lbl_preds = np.argmax(lbls, axis=1)
