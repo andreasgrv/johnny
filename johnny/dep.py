@@ -83,6 +83,14 @@ class Dataset(object):
     def arc_lengths(self):
         return tuple(chain(*[sent.arc_lengths for sent in self.sents]))
 
+    def unset_heads(self):
+        for s in self.sents:
+            s.unset_heads()
+
+    def unset_labels(self):
+        for s in self.sents:
+            s.unset_labels()
+
     def compute_token_ratios(self):
         # TODO: make this more efficient
         all_words = list(chain.from_iterable(s.words for s in self.sents))
@@ -172,6 +180,14 @@ class Sentence(object):
     def set_labels(self, labels):
         for t, l in zip(self.tokens, labels):
             t.deprel = l
+
+    def unset_heads(self):
+        for t in self.tokens:
+            t.head = None
+
+    def unset_labels(self):
+        for t in self.tokens:
+            t.deprel = None
 
     def is_projective(self):
         """Check if this tree is projective """
