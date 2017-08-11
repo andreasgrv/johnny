@@ -351,8 +351,8 @@ class CNNWordEncoder(chainer.Chain):
         # might as well pack them together to avoid wasting computation on padding
         # NOTE: batch size here is number of words in each batch of encoder
         # so for 32 batch size this can be 1000
-        if batch_size > 40:
-            SPLIT_INDEX = int(0.1 * batch_size)
+        SPLIT_INDEX = int(0.1 * batch_size)
+        if SPLIT_INDEX > 0:
             batch_split = np.array_split(sorted_word_list, [SPLIT_INDEX])
         else:
             batch_split = [sorted_word_list]
