@@ -320,6 +320,7 @@ class CNNWordEncoder(chainer.Chain):
             self.embed_layer = L.EmbedID(vocab_size, embed_units,
                                          ignore_label=self.IGNORE_LABEL)
             self.cnn_blocks = ['cnn_%d' % n for n in ngrams]
+            self.min_width = max(ngrams)
             self.highways = ['highway_%d' % i for i in range(num_highway_layers)]
             # for n in ngrams:
             #     setattr(self, self.cnn_blocks[n])
@@ -361,11 +362,14 @@ class CNNWordEncoder(chainer.Chain):
         for shard in batch_split:
 
             shard_len = len(shard)
-            max_shard_word_length = len(shard[0])
+            shard_longest_word = len(shard[0])
+            width = shard_longest_word
+            if width < self.min_width:
+                width = self.min_width
             word_vars = F.concat([chainer.Variable(self.xp.array([w[i]
                                                    if i < len(w)
                                                    else reserved.PAD
-                                                   for i in range(max_shard_word_length)],
+                                                   for i in range(width)],
                                                    dtype=self.xp.int32))
                                           for w in shard], axis=0)
 
@@ -374,6 +378,7 @@ class CNNWordEncoder(chainer.Chain):
             stacked = F.reshape(embeddings, (shard_len, -1, self.embed_units))
 
             stacked = F.expand_dims(stacked, axis=1)
+
             # for each in batch_embeddings:
             act = None
             for block in self.cnn_blocks:
@@ -382,7 +387,7 @@ class CNNWordEncoder(chainer.Chain):
                 # NOTE: batch_size is num_words in batch
                 # h shape : batch_size x num_filters x sent_len x 1
                 # =============================================================
-                # h = F.max_pooling_2d(h, (max_shard_word_length,
+                # h = F.max_pooling_2d(h, (width,
                 #                          self.embed_units))
                 # =============================================================
                 # NOTE: below max is max pooling over "time".
@@ -391,7 +396,7 @@ class CNNWordEncoder(chainer.Chain):
                 # which is much slower (especially on cpu)
                 h = F.max(h, 2)
                 # collapse last dimension
-                h = F.squeeze(h)
+                h = F.squeeze(h, 2)
                 # h shape : batch_size x num_filters
                 if act is None:
                     act = h
