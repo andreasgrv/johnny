@@ -7,10 +7,10 @@ from time import sleep
 from chainer import Variable, cuda
 from johnny.utils import bar, discrete_print
 from johnny.extern import DependencyDecoder
+from johnny.vocab import UDepVocab
 
 
 # TODO Check multiple roots issue
-# TODO Reimplement visualisation
 # TODO Check constraint algorithms + optimise
 # TODO Maybe switch to using predicted arcs towards end of training
 # TODO Think of ways of avoiding self prediction
@@ -40,7 +40,7 @@ class GraphParser(chainer.Chain):
         self.treeify = treeify.lower()
         self.visualise = visualise
         self.debug = debug
-        self.sleep_time = 0
+        self.sleep_time = 0.
 
         assert(treeify in self.TREE_OPTS)
         self.unit_mult = 2 if encoder.use_bilstm else 1
@@ -239,13 +239,15 @@ class GraphParser(chainer.Chain):
         if calc_loss:
             # NOTE: We need the heads variables both in predict heads & labels
             # heads are seq_len - 1 in length because they don't include ROOT
-            sorted_heads = self.encoder.transpose_batch(sorted_heads)
+            gold_heads = self.encoder.transpose_batch(sorted_heads)
+        else:
+            gold_heads = None
 
         arcs = self._predict_heads(comb_states_2d, self.encoder.mask, batch_stats,
-                sorted_heads=sorted_heads)
+                sorted_heads=gold_heads)
 
-        if self.debug:
-            self.arcs = cuda.to_cpu(arcs.data)
+        if self.debug or self.visualise:
+            self.arcs = cuda.to_cpu(F.softmax(arcs).data)
 
         if self.treeify != 'none':
             # TODO: check multiple roots issue
@@ -289,14 +291,17 @@ class GraphParser(chainer.Chain):
             arc_preds = cuda.to_cpu(p_arcs)
             p_arcs = np.swapaxes(p_arcs, 0, 1)
 
-        lbls = self._predict_labels(comb_states_2d, p_arcs, sorted_heads,
+        lbls = self._predict_labels(comb_states_2d, p_arcs, gold_heads,
                 batch_stats, sorted_labels=sorted_labels)
+
+        if self.debug or self.visualise:
+            self.lbls = cuda.to_cpu(F.softmax(lbls).data)
 
         lbls = cuda.to_cpu(lbls.data)
 
         # we only bother actually getting the softmax values
         # if we are to visualise the results
-        # if self.visualise:
+        if self.visualise:
             # replace logits with prob from softmax - we pad with the exp
             # of the MIN_PAD - since that would have been the value if we passed
             # the MIN_PAD through the softmax
@@ -306,7 +311,7 @@ class GraphParser(chainer.Chain):
             # lbls = F.softmax(lbls)
             # lbls = F.pad(lbls, [(0, int(batch_size - self.num_active)), (0, 0)],
             #              'constant', constant_values=self.xp.exp(self.MIN_PAD))
-            # self._visualise(i, arcs, lbls, gold_heads, gold_labels)
+            self._visualise(self.arcs[0], self.lbls[0], sorted_heads[0], sorted_labels[0])
         # else:
             # arcs = F.pad(arcs, [(0, int(batch_size - self.num_active)), (0, 0)],
             #              'constant', constant_values=self.MIN_PAD)
@@ -318,8 +323,9 @@ class GraphParser(chainer.Chain):
         self.loss = self.loss / total_tokens
 
         inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
-        if self.debug:
+        if self.debug or self.visualise:
             self.arcs = self.arcs[inv_perm_indices]
+            self.lbls = self.lbls[inv_perm_indices]
         # permute back to correct batch order
         # arcs = arc_preds[inv_perm_indices]
         arcs = [arc_preds[i] for i in inv_perm_indices]
@@ -334,24 +340,29 @@ class GraphParser(chainer.Chain):
 
         return arc_preds, lbl_preds
 
-    # def _visualise(self, i, arcs, lbls, gold_heads, gold_labels):
-    #     max_sent_len = len(arcs[0])
-    #     one_hot_index = self.xp.zeros(max_sent_len, dtype=self.xp.float32)
-    #     one_hot_arc = self.xp.zeros(max_sent_len, dtype=self.xp.float32)
-    #     correct_head_index = int(gold_heads.data[0])
-    #     one_hot_arc[correct_head_index] = 1.
-    #     one_hot_index[i] = 1.
-    #     one_hot_lbl = self.xp.zeros(self.num_labels, dtype=self.xp.float32)
-    #     correct_lbl_index = int(gold_labels.data[0]) 
-    #     one_hot_lbl[correct_lbl_index] = 1.
-    #     six.print_(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
-    #                          'Real label: %-110s\nPred label: %-110s\n\n'
-    #                          'Sleep time: %.2f - change with up and down arrow keys') % (
-    #          '[%s] %d' % (bar(one_hot_index[:90]), i),
-    #          '[%s] %d |%d|' % (bar(one_hot_arc[:90]), correct_head_index, abs(correct_head_index - i)),
-    #             '[%s]' % bar(arcs.data[0].reshape(-1)[:90]),
-    #             '[%s] %s' % (bar(one_hot_lbl), UDepVocab.TAGS[correct_lbl_index]),
-    #             '[%s]' % bar(lbls.data[0].reshape(-1)),
-    #             self.sleep_time),
-    #           end='', flush=True)
-    #     sleep(self.sleep_time)
+    def _visualise(self, arcs, lbls, gold_heads, gold_labels):
+        max_sent_len = len(arcs[1])
+        one_hot_index = self.xp.zeros(max_sent_len, dtype=self.xp.float32)
+        one_hot_arc = self.xp.zeros(max_sent_len+1, dtype=self.xp.float32)
+        one_hot_lbl = self.xp.zeros(self.num_labels, dtype=self.xp.float32)
+        for i in range(max_sent_len):
+            correct_head_index = gold_heads[i]
+            one_hot_arc[correct_head_index] = 1.
+            one_hot_index[i] = 1.
+            correct_lbl_index = gold_labels[i]
+            one_hot_lbl[correct_lbl_index] = 1.
+            six.print_(discrete_print('\n\nCur index : %-110s\nReal head : %-110s\nPred head : %-110s\n\n'
+                                 'Real label: %-110s\nPred label: %-110s\n\n'
+                                 'Sleep time: %.2f - change with up and down arrow keys') % (
+                 '[%s] %d' % (bar(one_hot_index[:90]), i),
+                 '[%s] %d |%d|' % (bar(one_hot_arc[:90]), correct_head_index, abs(correct_head_index - i)),
+                    '[%s]' % bar(arcs[:, i].reshape(-1)[:90]),
+                    '[%s] %s' % (bar(one_hot_lbl), UDepVocab.TAGS[correct_lbl_index]),
+                    '[%s]' % bar(lbls[:, i].reshape(-1)),
+                    self.sleep_time),
+                  end='', flush=True)
+            # reset values
+            one_hot_index[i] = 0.
+            one_hot_arc[correct_head_index] = 0.
+            one_hot_lbl[correct_lbl_index] = 0.
+            sleep(self.sleep_time)
