@@ -15,21 +15,26 @@ This is an implementation of a graph based arc factored neural dependency parser
 The implementation is based on the papers that can be found in the References section.
 
 ### Installation
+
 >
 	git clone https://github.com/andreasgrv/johnny
 	cd johnny
+	# virtualenv .env && source .env/bin/activate # optional but recommended
 	pip install -r requirements.txt
 	pip install .
 
 ### Training
 
+While the basic library was tested for on Debian: python2.7, python3.4, python3.5,
+the train and test utility scripts will only work on **python >= 3.3**.
+
 Models for dependency parsing can be trained on the
 [Universal Dependencies v2.0](http://universaldependencies.org/) dataset using
 the **train.py** script.
 
-But first, you need data!
 Download and extract the contents to a folder of your choosing (we will refer
-to this as UD_FOLDER, the path to the folder containing the languages).
+to this as *UD_FOLDER*, the path to the folder containing the languages).
+This will probably look something like "ud-treebanks-v2.0".
 
 To train models you can use the default blueprints I used in my dissertation. Alternatively,
 if you are in for a thrill, you can override the settings to see
@@ -92,7 +97,10 @@ training data - namely what the parser should have predicted.
 
 ![A visualisation of the parser running in the terminal](http://johnny.overfit.xyz/parser.gif)
 
-Python versions tested for on Debian: python2.7, python3.4, python3.5
+
+### License
+
+3 clause BSD, see LICENSE.txt file
 
 ### References
 
