@@ -1,0 +1,61 @@
+# <=0 ngram means we use word level
+# 1+ corresponds to character ngram size (unigrams, bigrams, trigrams)
+seed: 43
+ngram: 1
+max_epochs: 1000
+batch_size: 32
+dev_batch_size: 256
+vocab:
+  size: 100
+  threshold: 10
+dataset:
+  name: CONLL2017_v2_0
+  lang: English
+model:
+  _module: johnny.models
+  _classname: GraphParser
+  encoder:
+    _module: johnny.components
+    _classname: SentenceEncoder
+    dropout: 0.6
+    embedder:
+      _module: johnny.components
+      _classname: SubwordEmbedder
+      dropout: 0.2
+      word_encoder:
+        _module: johnny.components
+        _classname: LSTMWordEncoder
+        vocab_size: dunno
+        num_units: 200
+        num_layers: 1
+        rec_dropout: 0.6
+        inp_dropout: 0.2
+        use_bilstm: True
+      in_sizes:
+      - dunno
+      out_sizes:
+      - 30
+    num_layers: 2
+    num_units: 200
+    use_bilstm: true
+  mlp_arc_units: 100
+  mlp_lbl_units: 100
+  arc_dropout: 0.2
+  lbl_dropout: 0.6
+  num_labels: dunno
+  treeify: none
+optimizer:
+  grad_clip: 5
+  learning_rate: 0.001
+preprocess:
+  collapse_nums: false
+  collapse_triples: false
+  lowercase: true
+  expand_diacritics: true
+  remove_diacritics: false
+train_buckets:
+  bucket_width: 5
+  right_leak: 5
+checkpoint:
+  patience: 50
+  every: 100
