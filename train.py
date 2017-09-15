@@ -30,7 +30,6 @@ def seed_chainer(seed, gpu_id):
         chainer.functions.connection.n_step_rnn._random_states[gpu_id] = rs
 
 
-
 def preprocess(word, conf):
     if conf.lowercase:
         word = word.lower()
@@ -65,10 +64,8 @@ def create_vocabs(t_set, conf):
                                         for w in s)
                     for s in t_set.words)
 
-    v_word = Vocab.from_token_list(chain.from_iterable(t_tokens),
-                                   out_size=conf.vocab.size,
-                                   threshold=conf.vocab.threshold)
-
+    v_word = Vocab(out_size=conf.vocab.size,
+                   threshold=conf.vocab.threshold).fit(chain.from_iterable(t_tokens))
     # if we are using the CONLL2017 dataset (universal dependencies)
     # then we know the vocabulary beforehand. We use the full vocabulary
     # with predefined keys because it is less errorprone, and because we
@@ -299,7 +296,8 @@ if __name__ == "__main__":
     parser.add_argument('--visualise', action='store_true',
                         help='Whether to visualise training or not.')
     parser.add_argument('--verbose', action='store_true',
-                        help='Whether to print additional info.')
+                        help='Whether to print additional info such '
+                        'as model and vocabulary info.')
     parser.add_argument('--load_blueprint', action=YAMLLoaderAction)
 
     conf = parser.parse_args()

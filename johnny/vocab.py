@@ -68,9 +68,6 @@ class Vocab(object):
             We always represent UNK, START and END but we don't count
             them in len. Use out_size attribute for that.
 
-            counts: a dictionary of token, counts to initialise the vocab
-            with.
-
             threshold: int - we throw away tokens with up to and including
             this many counts.
         """
@@ -85,11 +82,8 @@ class Vocab(object):
             self.size = size
         else:
             raise ValueError("Can't set both size and out_size")
-        self.counts = counts or dict()
         self.threshold = threshold
         self.index = None
-        self._threshold_counts()
-        self._build_index()
 
     def __repr__(self):
         return ('Vocab object\ncapacity: %d\nactual size: %d\nthreshold: %d'
@@ -125,10 +119,17 @@ class Vocab(object):
         for key in remove:
             self.counts.pop(key)
 
+    def fit(self, tokens):
+        """Populate the vocabulary using the tokens as input.
+        Tokens are expected to be a iterable of tokens."""
+        self.counts = Counter(tokens)
+        self._threshold_counts()
+        self._build_index()
+        return self
+
     def encode(self, tokens):
         """tokens: iterable of tokens to get indices for.
-        returns list of indices.
-        """
+        Returns list of indices.  """
         return tuple(self.index.get(token, self.reserved.UNK) for token in tokens)
 
     def save(self, filepath):
@@ -139,11 +140,6 @@ class Vocab(object):
     def load(cl, filepath):
         with open(filepath, 'rb') as f:
             return pickle.load(f)
-
-    @classmethod
-    def from_token_list(cl, tokens, size=None, out_size=None, threshold=0):
-        c = Counter(tokens)
-        return cl(counts=c, size=size, out_size=out_size, threshold=threshold)
 
 
 class UPOSVocab(object):
@@ -186,6 +182,9 @@ class UPOSVocab(object):
 
     def __getitem__(self, key):
         return self.index[key]
+
+    def fit(self):
+        return self
 
     def encode(self, tags):
         """tags : iterable of tags """
@@ -255,6 +254,9 @@ class UDepVocab(object):
     def __getitem__(self, key):
         return self.index[key]
 
+    def fit(self, tokens):
+        return self
+
     def encode(self, tags):
         """tags : iterable of tags """
         return tuple(self.index[tag] for tag in tags)
@@ -278,6 +280,9 @@ class AbstractVocab(object):
 
     def __getitem__(self, key):
         return self.index[key]
+
+    def fit(self, tokens):
+        return self
 
     def encode(self, tags):
         """tags : iterable of tags """
