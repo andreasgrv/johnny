@@ -11,13 +11,14 @@ Upcoming:
 
 ### What is johnny?
 
-This is an implementation of a graph based arc factored neural dependency parser implemented using [Chainer](https://chainer.org/). There are 3 encoders that can be used with this parser.
+This is an implementation of a graph based arc factored neural dependency parser implemented using [Chainer](https://chainer.org/).
+There are 3 encoders that can be used with this parser.
 
-* [Word-BILSTM](blueprints/dissertation/word-level.yaml),
+* [Word-BILSTM](blueprints/word-level.yaml),
 a Bidirectional LSTM encoder that encodes words.
-* [Char-BILSTM](blueprints/dissertation/lstm-char-level.yaml),
+* [Char-BILSTM](blueprints/lstm-char-level.yaml),
 a Bidirectional LSTM encoder that encodes words on the character level.
-* [Char-CNN](blueprints/dissertation/cnn-char-level.yaml), a Convolutional Neural network encoder that encodes words on the character level.
+* [Char-CNN](blueprints/cnn-char-level.yaml), a Convolutional Neural network encoder that encodes words on the character level.
 
 The implementation is based on the papers that can be found in the References section.
 
@@ -44,7 +45,9 @@ Download and extract the contents to a folder of your choosing (we will refer
 to this as *UD_FOLDER*, the path to the folder containing the languages).
 This will probably look something like "ud-treebanks-v2.0".
 
-To train models you can use the default blueprints I used in my dissertation. Alternatively,
+To train models you can use the default blueprints I used, similar to the ones
+used in my dissertation (For blueprints that use part of speech tags as input
+you need to checkout v0.0.1). Alternatively,
 if you are in for a thrill, you can override the settings to see
 what happens. The blueprints can be found under the blueprints folder.
 
@@ -54,7 +57,7 @@ v2.0 dataset, you can follow this snippet:
 ``` bash
 mkdir models # you can use a different folder if you like
 python train.py -i UD_FOLDER -o models --verbose --name mytest \
-				--load_blueprint blueprints/dissertation/cnn-char-level.yaml
+				--load_blueprint blueprints/cnn-char-level.yaml
 				--dataset.lang Russian # Unsurprisingly, English is the default
 ```
 

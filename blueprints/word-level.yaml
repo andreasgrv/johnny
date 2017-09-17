@@ -1,0 +1,51 @@
+ngram: 0
+subword: False
+seed: 43
+max_epochs: 1000
+batch_size: 32
+dev_batch_size: 256
+vocab:
+  size: 5000
+  threshold: 0
+dataset:
+  name: CONLL2017_v2_0
+  lang: English
+model:
+  $module: johnny.models
+  $classname: GraphParser
+  encoder:
+    $module: johnny.components
+    $classname: SentenceEncoder
+    dropout: 0.6
+    embedder:
+      $module: johnny.components
+      $classname: Embedder
+      dropout: 0.4
+      in_sizes:
+      - dunno
+      out_sizes:
+      - 200
+    num_layers: 2
+    num_units: 200
+    use_bilstm: true
+  mlp_arc_units: 100
+  mlp_lbl_units: 100
+  arc_dropout: 0.2
+  lbl_dropout: 0.6
+  num_labels: dunno
+  treeify: none
+optimizer:
+  grad_clip: 5
+  learning_rate: 0.001
+preprocess:
+  collapse_nums: true
+  collapse_triples: true
+  lowercase: true
+  expand_diacritics: false
+  remove_diacritics: false
+train_buckets:
+  bucket_width: 5
+  right_leak: 5
+checkpoint:
+  patience: 50
+  every: 100

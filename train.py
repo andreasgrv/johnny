@@ -9,7 +9,7 @@ from tqdm import tqdm
 from itertools import chain
 from johnny import EXP_ENV_VAR
 from johnny.dep import UDepLoader
-from johnny.vocab import Vocab, AbstractVocab, UDepVocab, UPOSVocab
+from johnny.vocab import Vocab, AbstractVocab, UDepVocab # , UPOSVocab
 from johnny.utils import BucketManager
 from johnny.metrics import Average, UAS, LAS
 import johnny.preprocess as pp
@@ -71,17 +71,19 @@ def create_vocabs(t_set, conf):
     # with predefined keys because it is less errorprone, and because we
     # know the labels of the indices for the confusion matrix.
     if 'v2_0' in conf.dataset.name:
-        v_pos = UPOSVocab()
+        # v_pos = UPOSVocab()
         v_arcs = UDepVocab()
     else:
-        v_pos = AbstractVocab()
+        # v_pos = AbstractVocab()
         v_arcs = AbstractVocab(with_reserved=False)
-    vocabs = (v_word, v_pos, v_arcs)
+    # vocabs = (v_word, v_pos, v_arcs)
+    vocabs = (v_word, v_arcs)
     return vocabs
 
 
 def data_to_rows(data, vocabs, conf):
-    v, vpos, varcs = vocabs
+    # v, vpos, varcs = vocabs
+    v, varcs = vocabs
     if conf.ngram <= 0:
         words_indices = tuple(v.encode(preprocess(w, conf.preprocess)
                                for w in s)
@@ -90,10 +92,11 @@ def data_to_rows(data, vocabs, conf):
         words_indices = tuple(tuple(v.encode(to_ngrams(preprocess(w, conf.preprocess), n=conf.ngram))
                                              for w in s)
                               for s in data.words)
-    pos_indices = tuple(map(vpos.encode, data.upostags))
+    # pos_indices = tuple(map(vpos.encode, data.upostags))
     labels_indices = tuple(map(varcs.encode, data.arctags))
     heads = data.heads
-    data_rows = zip(words_indices, pos_indices, heads, labels_indices)
+    # data_rows = zip(words_indices, pos_indices, heads, labels_indices)
+    data_rows = zip(words_indices, heads, labels_indices)
     return tuple(data_rows)
 
 
@@ -318,7 +321,8 @@ if __name__ == "__main__":
     conf.dataset.dev_max_sent_len = v_set.len_stats['max_sent_len']
 
     vocabs = create_vocabs(t_set, conf)
-    v_word, v_pos, v_arc = vocabs
+    # v_word, v_pos, v_arc = vocabs
+    v_word, v_arc = vocabs
 
     train_rows = data_to_rows(t_set, vocabs, conf)
     dev_rows = data_to_rows(v_set, vocabs, conf)
@@ -329,10 +333,9 @@ if __name__ == "__main__":
             visualise_dict(v.index, num_items=50)
 
     if conf.ngram <= 0:
-        conf.model.encoder.embedder.in_sizes = [len(v_word), len(v_pos)]
+        conf.model.encoder.embedder.in_sizes = [len(v_word)]
     else:
         conf.model.encoder.embedder.word_encoder.vocab_size = len(v_word)
-        conf.model.encoder.embedder.in_sizes = [len(v_pos)]
     conf.model.num_labels = len(v_arc)
 
     # built_conf has all class representations instantiated

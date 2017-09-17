@@ -15,9 +15,10 @@ def test_loop(bp, test_set):
     with open(vocab_path, 'rb') as pf:
         vocabs = pickle.load(pf)
 
-    (v_word, v_pos, v_arcs) = vocabs
+    # (v_word, v_pos, v_arcs) = vocabs
+    (v_word, v_arcs) = vocabs
     visualise_dict(v_word.index, num_items=20)
-    visualise_dict(v_pos.index, num_items=20)
+    # visualise_dict(v_pos.index, num_items=20)
     visualise_dict(v_arcs.index, num_items=20)
 
     test_rows = data_to_rows(test_set, vocabs, bp)
@@ -59,15 +60,11 @@ def test_loop(bp, test_set):
         BATCH_SIZE = 256
         for batch in to_batches(test_rows, BATCH_SIZE, sort=False):
             batch_size = 0
-            word_batch, pos_batch, head_batch, label_batch = zip(*batch)
-            if UNLABELLED:
-                arc_preds, lbl_preds = model(word_batch, pos_batch,
-                                             heads=None, labels=None)
-            else:
-                arc_preds, lbl_preds = model(word_batch, pos_batch,
-                                             heads=head_batch, labels=label_batch)
+            seqs = list(zip(*batch))
+            label_batch = seqs.pop()
+            head_batch = seqs.pop()
+            arc_preds, lbl_preds = model(*seqs, heads=head_batch, labels=label_batch)
             loss = model.loss
-
             loss_value = float(loss.data)
 
             for p_arcs, p_lbls, t_arcs, t_lbls in zip(arc_preds, lbl_preds, head_batch, label_batch):
@@ -97,15 +94,13 @@ def test_loop(bp, test_set):
 
 if __name__ == "__main__":
     # needed to import train to visualise_train
-    parser = ArgumentParser(description='Dependency parser trainer')
+    parser = ArgumentParser(description='Dependency parser evaluator')
     parser.add_argument('--blueprint', required=True, type=str,
                         help='Path to .bp blueprint file produces by training.')
     parser.add_argument('--test_file', required=True, type=str,
                         help='Conll file to use for testing')
     parser.add_argument('--conll_out', action='store_true',
                         help='If specified writes conll output')
-    parser.add_argument('--unlabelled', action='store_true',
-                        help='whether we are passing labels or not')
     parser.add_argument('--treeify', type=str, default='chu',
                         help='algorithm to postprocess arcs with. '
                         'Choose chu to allow for non projectivity, else eisner')
@@ -113,13 +108,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     CONLL_OUT = args.conll_out
-    UNLABELLED = args.unlabelled
     TREEIFY = args.treeify
 
     blueprint = Blueprint.from_file(args.blueprint)
     blueprint.model.treeify = TREEIFY
 
     test_data = UDepLoader.load_conllu(args.test_file)
+    test_data.lang = blueprint.dataset.lang
 
     test_loop(blueprint, test_data)
 

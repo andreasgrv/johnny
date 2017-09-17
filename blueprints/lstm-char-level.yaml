@@ -1,33 +1,36 @@
 # <=0 ngram means we use word level
 # 1+ corresponds to character ngram size (unigrams, bigrams, trigrams)
 seed: 43
-ngram: 0
+ngram: 1
 max_epochs: 1000
 batch_size: 32
 dev_batch_size: 256
 vocab:
-  size: 5000
-  threshold: 0
+  size: 100
+  threshold: 10
 dataset:
   name: CONLL2017_v2_0
   lang: English
 model:
-  _module: johnny.models
-  _classname: GraphParser
+  $module: johnny.models
+  $classname: GraphParser
   encoder:
-    _module: johnny.components
-    _classname: SentenceEncoder
+    $module: johnny.components
+    $classname: SentenceEncoder
     dropout: 0.6
     embedder:
-      _module: johnny.components
-      _classname: Embedder
-      dropout: 0.4
-      in_sizes:
-      - dunno
-      - dunno
-      out_sizes:
-      - 200
-      - 30
+      $module: johnny.components
+      $classname: SubwordEmbedder
+      dropout: 0.2
+      word_encoder:
+        $module: johnny.components
+        $classname: LSTMWordEncoder
+        vocab_size: dunno
+        num_units: 200
+        num_layers: 1
+        rec_dropout: 0.6
+        inp_dropout: 0.2
+        use_bilstm: True
     num_layers: 2
     num_units: 200
     use_bilstm: true
@@ -41,10 +44,10 @@ optimizer:
   grad_clip: 5
   learning_rate: 0.001
 preprocess:
-  collapse_nums: true
-  collapse_triples: true
+  collapse_nums: false
+  collapse_triples: false
   lowercase: true
-  expand_diacritics: false
+  expand_diacritics: true
   remove_diacritics: false
 train_buckets:
   bucket_width: 5
