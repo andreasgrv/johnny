@@ -1,9 +1,9 @@
 import chainer
-import pickle
+import dill
 from tqdm import tqdm
 from johnny.dep import UDepLoader
 from johnny.metrics import Average, UAS, LAS
-from train import visualise_dict, data_to_rows, to_batches
+from train import visualise_dict, dataset_to_cols, data_to_rows, to_batches
 from mlconf import ArgumentParser, Blueprint
 
 
@@ -13,15 +13,13 @@ def test_loop(bp, test_set):
     vocab_path = bp.vocab_path
 
     with open(vocab_path, 'rb') as pf:
-        vocabs = pickle.load(pf)
+        vocabs = dill.load(pf)
 
-    # (v_word, v_pos, v_arcs) = vocabs
-    (v_word, v_arcs) = vocabs
-    visualise_dict(v_word.index, num_items=20)
-    # visualise_dict(v_pos.index, num_items=20)
-    visualise_dict(v_arcs.index, num_items=20)
+    visualise_dict(vocabs.text.index, num_items=20)
+    visualise_dict(vocabs.arcs.index, num_items=20)
 
-    test_rows = data_to_rows(test_set, vocabs, bp)
+    test_data = dataset_to_cols(test_set, bp)
+    test_rows = data_to_rows(test_data, vocabs, bp)
     print(test_set)
     print(test_set[0][0])
     print(test_set[-1][-1])
@@ -70,9 +68,9 @@ def test_loop(bp, test_set):
             for p_arcs, p_lbls, t_arcs, t_lbls in zip(arc_preds, lbl_preds, head_batch, label_batch):
                 u_scorer(arcs=(p_arcs, t_arcs))
                 l_scorer(arcs=(p_arcs, t_arcs), labels=(p_lbls, t_lbls))
-                # test_set[index].set_heads(p_arcs)
-                # str_labels = (v_arcs.rev_index[l] for l in p_lbls)
-                # test_set[index].set_labels(str_labels)
+                test_set[index].set_heads(p_arcs)
+                str_labels = (vocabs.arcs.rev_index[l] for l in p_lbls)
+                test_set[index].set_labels(str_labels)
                 index += 1
                 batch_size += 1
             mean_loss(loss_value)

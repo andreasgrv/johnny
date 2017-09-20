@@ -1,7 +1,6 @@
-# <=0 ngram means we use word level
-# 1+ corresponds to character ngram size (unigrams, bigrams, trigrams)
 seed: 43
 ngram: 1
+subword: True
 max_epochs: 1000
 batch_size: 32
 dev_batch_size: 256

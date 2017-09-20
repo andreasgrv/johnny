@@ -235,15 +235,14 @@ class Experiment(object):
         return '%s%s' % (self.filepath, self.VOCAB_SUFFIX)
 
         
-shades = [' ', '░', '▒', '▓', '█']
+SHADES = ' ░▒▓█'
+BARS = ' ▁▂▃▄▅▆▇'
 
 def shade(probs):
-    return ''.join([shades[int(prob/0.201)] for prob in probs])
-
-bars = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇']
+    return ''.join([SHADES[int(prob/0.201)] for prob in probs])
 
 def bar(probs):
-    return ''.join([bars[int(prob/0.151)] for prob in probs])
+    return ''.join([BARS[int(prob/0.151)] for prob in probs])
 
 def discrete_print(string):
     newlines = string.count('\n') + 1

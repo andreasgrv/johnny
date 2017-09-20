@@ -1,4 +1,4 @@
-ngram: 0
+ngram: 1
 subword: False
 seed: 43
 max_epochs: 1000

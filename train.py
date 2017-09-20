@@ -3,10 +3,11 @@ import os
 import sys
 import numpy as np
 import chainer
-import pickle
+import dill
 from mlconf import YAMLLoaderAction, ArgumentParser
 from tqdm import tqdm
 from itertools import chain
+from collections import namedtuple
 from johnny import EXP_ENV_VAR
 from johnny.dep import UDepLoader
 from johnny.vocab import Vocab, AbstractVocab, UDepVocab # , UPOSVocab
@@ -16,6 +17,9 @@ import johnny.preprocess as pp
 
 
 np.set_printoptions(precision=5, suppress=True)
+
+vocab_tup = namedtuple('Vocabs', ('text', 'arcs'))
+data_tup = namedtuple('DataCols', ('text', 'heads', 'arcs'))
 
 
 def seed_chainer(seed, gpu_id):
@@ -30,73 +34,83 @@ def seed_chainer(seed, gpu_id):
         chainer.functions.connection.n_step_rnn._random_states[gpu_id] = rs
 
 
-def preprocess(word, conf):
-    if conf.lowercase:
+def preprocess(word,
+               lowercase=False,
+               collapse_nums=False,
+               collapse_triples=False,
+               remove_diacritics=False,
+               expand_diacritics=False):
+    if lowercase:
         word = word.lower()
     # replace numbers with __NUM__
-    if conf.collapse_nums:
+    if collapse_nums:
         word = pp.collapse_nums(word)
     # collapse more than 3 repetitions of a character
     # to two repetitions TODO: maybe this is bad for some langs?
-    if conf.collapse_triples:
+    if collapse_triples:
         word = pp.collapse_triples(word)
-    if conf.remove_diacritics:
+    if remove_diacritics:
         word = pp.remove_diacritics(word)
-    if conf.expand_diacritics:
+    if expand_diacritics:
         word = pp.expand_diacritics(word)
     return word
 
 
-def to_ngrams(word, n=1):
-    assert(n > 0)
+def to_ngrams(iterable, n=1, pad='_'):
+    assert n > 0, 'value of n must be greater than 0'
+    assert len(iterable) >= 1
     if n == 1:
-        return tuple(word)
-    return tuple(word[i:i+n] for i in range(len(word)-n+1))
-
-
-def create_vocabs(t_set, conf):
-    # we don't need to pad in this case
-    if conf.ngram <= 0:
-        t_tokens = ((preprocess(w, conf.preprocess) for w in s)
-                    for s in t_set.words)
+        return tuple(e for e in iterable)
+    # if n is more than the length of the iterable - pad it
+    if n > len(iterable):
+        return (tuple(chain(iterable,[pad] * (n - len(iterable)))),)
     else:
-        t_tokens = (chain.from_iterable(to_ngrams(preprocess(w, conf.preprocess), n=conf.ngram)
-                                        for w in s)
-                    for s in t_set.words)
+        return tuple(tuple(iterable[i:i+n])
+                     for i in range(len(iterable)-n+1))
 
-    v_word = Vocab(out_size=conf.vocab.size,
-                   threshold=conf.vocab.threshold).fit(chain.from_iterable(t_tokens))
-    # if we are using the CONLL2017 dataset (universal dependencies)
-    # then we know the vocabulary beforehand. We use the full vocabulary
-    # with predefined keys because it is less errorprone, and because we
-    # know the labels of the indices for the confusion matrix.
-    if 'v2_0' in conf.dataset.name:
-        # v_pos = UPOSVocab()
-        v_arcs = UDepVocab()
+
+def process_text(sent, ngram=1, is_subword=False, preprocess_funcs=None):
+    """Preprocess text and create ngrams from an iterable of tokens.
+
+    sent: iterable of tokens
+
+    returns: generator expression of ngrams of preprocessed sentence.
+    """
+    if preprocess_funcs is None:
+        preprocess_funcs = dict()
+    if is_subword:
+        return tuple(to_ngrams(preprocess(w, **preprocess_funcs),
+                               n=ngram)
+                     for w in sent)
     else:
-        # v_pos = AbstractVocab()
-        v_arcs = AbstractVocab(with_reserved=False)
-    # vocabs = (v_word, v_pos, v_arcs)
-    vocabs = (v_word, v_arcs)
-    return vocabs
+        return tuple(to_ngrams(tuple(preprocess(w, **preprocess_funcs) for w in sent),
+                               n=ngram))
+
+
+def encode_texts(sents, vocab, is_subword=False):
+    """Encode a batch of sentences using a vocabulary.
+    This converts the strings to ids looked up in the vocab
+    dictionary."""
+    if is_subword:
+        return tuple(tuple(map(vocab.encode, s)) for s in sents)
+    else:
+        return tuple(map(vocab.encode, sents))
+
+
+def dataset_to_cols(dataset, conf):
+    text = tuple(process_text(s, conf.ngram, conf.subword, conf.preprocess)
+                 for s in dataset.words)
+    return data_tup(text, dataset.heads, dataset.arctags)
 
 
 def data_to_rows(data, vocabs, conf):
-    # v, vpos, varcs = vocabs
-    v, varcs = vocabs
-    if conf.ngram <= 0:
-        words_indices = tuple(v.encode(preprocess(w, conf.preprocess)
-                               for w in s)
-                               for s in data.words)
-    else:
-        words_indices = tuple(tuple(v.encode(to_ngrams(preprocess(w, conf.preprocess), n=conf.ngram))
-                                             for w in s)
-                              for s in data.words)
-    # pos_indices = tuple(map(vpos.encode, data.upostags))
-    labels_indices = tuple(map(varcs.encode, data.arctags))
-    heads = data.heads
-    # data_rows = zip(words_indices, pos_indices, heads, labels_indices)
-    data_rows = zip(words_indices, heads, labels_indices)
+    """Encodes input using vocabs where needed and returns a tuple of
+    rows. Each row is a training instance containing both inputs and
+    targets (inputs first, targets later)."""
+    text_ids = encode_texts(data.text, vocabs.text, conf.subword)
+    label_ids = tuple(map(vocabs.arcs.encode, data.arcs))
+    # NOTE: The order of the following args in the zip matters
+    data_rows = zip(text_ids, data.heads, label_ids)
     return tuple(data_rows)
 
 
@@ -133,7 +147,7 @@ def visualise_dict(d, num_items=50):
 
 def train_epoch(model, optimizer, buckets, data_size):
     iters = 0
-    tf_str = 'Train: batch_size={0:d}, mean loss={1:.2f}, mean UAS={2:.3f} mean LAS={3:.3f}'
+    tf_str = 'Train: batch_size={0:d}, mean loss={1:.2f}, mean LAS={3:.3f} mean UAS={2:.3f}'
     with tqdm(total=data_size, leave=False) as pbar, \
         chainer.using_config('train', True):
 
@@ -319,24 +333,39 @@ if __name__ == "__main__":
 
     conf.dataset.train_max_sent_len = t_set.len_stats['max_sent_len']
     conf.dataset.dev_max_sent_len = v_set.len_stats['max_sent_len']
+    
+    t_data = dataset_to_cols(t_set, conf)
 
-    vocabs = create_vocabs(t_set, conf)
-    # v_word, v_pos, v_arc = vocabs
-    v_word, v_arc = vocabs
+    # instantiate vocabs
+    v_word = Vocab(out_size=conf.vocab.size, threshold=conf.vocab.threshold)
+    v_arcs = UDepVocab()
 
-    train_rows = data_to_rows(t_set, vocabs, conf)
-    dev_rows = data_to_rows(v_set, vocabs, conf)
+    # fit vocabs to data
+    if conf.subword:
+        # if working on subwords, t_data.text is of depth 3: sents, words, chars
+        # so we need to chain to pass a flat list of char ngrams
+        v_word = v_word.fit(chain.from_iterable(chain.from_iterable(t_data.text)))
+    else:
+        v_word = v_word.fit(chain.from_iterable(t_data.text))
 
+    vocabs = vocab_tup(v_word, v_arcs)
+
+    # visualise vocabs
     if conf.verbose:
         for v in vocabs:
             print(v)
             visualise_dict(v.index, num_items=50)
 
-    if conf.ngram <= 0:
-        conf.model.encoder.embedder.in_sizes = [len(v_word)]
-    else:
+    train_rows = data_to_rows(t_data, vocabs, conf)
+
+    v_data = dataset_to_cols(v_set, conf)
+    dev_rows = data_to_rows(v_data, vocabs, conf)
+
+    if conf.subword:
         conf.model.encoder.embedder.word_encoder.vocab_size = len(v_word)
-    conf.model.num_labels = len(v_arc)
+    else:
+        conf.model.encoder.embedder.in_sizes = [len(v_word)]
+    conf.model.num_labels = len(v_arcs)
 
     # built_conf has all class representations instantiated
     # we need this here because otherwise we wouldn't be able to set random seed
@@ -413,7 +442,7 @@ if __name__ == "__main__":
         conf.model_path = model_path
         print('Writing vocabs to %s' % vocab_path)
         with open(vocab_path, 'wb') as pf:
-            pickle.dump(vocabs, pf)
+            dill.dump(vocabs, pf)
         conf.vocab_path = vocab_path
         print('Writing blueprint to %s' % blueprint_path)
         conf.to_file(blueprint_path)
