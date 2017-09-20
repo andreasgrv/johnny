@@ -173,6 +173,7 @@ class UPOSVocab(object):
         self.tags = list(RESERVED.keys())
         self.tags.extend(self.TAGS)
         self.index = dict((key, index) for index, key in enumerate(self.tags))
+        self.rev_index = dict((val, key) for key, val in self.index.items())
 
     def __repr__(self):
         return ('UPOSVocab object\nnum tags: %d\n' % len(self))
@@ -244,6 +245,7 @@ class UDepVocab(object):
         super(UDepVocab, self).__init__()
         self.tags = self.TAGS
         self.index = dict((key, index) for index, key in enumerate(self.tags))
+        self.rev_index = dict((val, key) for key, val in self.index.items())
 
     def __repr__(self):
         return ('UDepVocab object\nnum tags: %d' % len(self))
@@ -268,8 +270,7 @@ class AbstractVocab(object):
     def __init__(self, with_reserved=True, mutable=True):
         super(AbstractVocab, self).__init__()
         self.index = dict(**RESERVED) if with_reserved else dict()
-        self.rev_index = dict((val, key) for key, val in RESERVED.items()) \
-                         if with_reserved else dict()
+        self.rev_index = dict((val, key) for key, val in self.index.items())
         self.mutable = mutable
 
     def __repr__(self):
