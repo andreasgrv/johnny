@@ -3,7 +3,8 @@ import dill
 from tqdm import tqdm
 from johnny.dep import UDepLoader
 from johnny.metrics import Average, UAS, LAS
-from train import visualise_dict, dataset_to_cols, data_to_rows, to_batches
+from johnny.misc import visualise_dict
+from train import dataset_to_cols, data_to_rows, to_batches
 from mlconf import ArgumentParser, Blueprint
 
 

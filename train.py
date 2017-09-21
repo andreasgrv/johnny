@@ -1,9 +1,8 @@
-from __future__ import division
 import os
 import sys
-import numpy as np
-import chainer
 import dill
+import chainer
+import numpy as np
 from mlconf import YAMLLoaderAction, ArgumentParser
 from tqdm import tqdm
 from itertools import chain
@@ -11,9 +10,9 @@ from collections import namedtuple
 from johnny import EXP_ENV_VAR
 from johnny.dep import UDepLoader
 from johnny.vocab import Vocab, UDepVocab # , UPOSVocab
-from johnny.misc import BucketManager
+from johnny.misc import visualise_dict, BucketManager
 from johnny.metrics import Average, UAS, LAS
-import johnny.preprocess as pp
+from johnny.text_utils import process_text, encode_texts
 
 
 np.set_printoptions(precision=5, suppress=True)
@@ -32,69 +31,6 @@ def seed_chainer(seed, gpu_id):
         chainer.cuda.cupy.random.get_random_state()
         rs = chainer.functions.connection.n_step_rnn.DropoutRandomStates(seed)
         chainer.functions.connection.n_step_rnn._random_states[gpu_id] = rs
-
-
-def preprocess(word,
-               lowercase=False,
-               collapse_nums=False,
-               collapse_triples=False,
-               remove_diacritics=False,
-               expand_diacritics=False):
-    if lowercase:
-        word = word.lower()
-    # replace numbers with __NUM__
-    if collapse_nums:
-        word = pp.collapse_nums(word)
-    # collapse more than 3 repetitions of a character
-    # to two repetitions TODO: maybe this is bad for some langs?
-    if collapse_triples:
-        word = pp.collapse_triples(word)
-    if remove_diacritics:
-        word = pp.remove_diacritics(word)
-    if expand_diacritics:
-        word = pp.expand_diacritics(word)
-    return word
-
-
-def to_ngrams(iterable, n=1, pad='_'):
-    assert n > 0, 'value of n must be greater than 0'
-    assert len(iterable) >= 1
-    if n == 1:
-        return tuple(e for e in iterable)
-    # if n is more than the length of the iterable - pad it
-    if n > len(iterable):
-        return (tuple(chain(iterable,[pad] * (n - len(iterable)))),)
-    else:
-        return tuple(tuple(iterable[i:i+n])
-                     for i in range(len(iterable)-n+1))
-
-
-def process_text(sent, ngram=1, is_subword=False, preprocess_funcs=None):
-    """Preprocess text and create ngrams from an iterable of tokens.
-
-    sent: iterable of tokens
-
-    returns: generator expression of ngrams of preprocessed sentence.
-    """
-    if preprocess_funcs is None:
-        preprocess_funcs = dict()
-    if is_subword:
-        return tuple(to_ngrams(preprocess(w, **preprocess_funcs),
-                               n=ngram)
-                     for w in sent)
-    else:
-        return tuple(to_ngrams(tuple(preprocess(w, **preprocess_funcs) for w in sent),
-                               n=ngram))
-
-
-def encode_texts(sents, vocab, is_subword=False):
-    """Encode a batch of sentences using a vocabulary.
-    This converts the strings to ids looked up in the vocab
-    dictionary."""
-    if is_subword:
-        return tuple(tuple(map(vocab.encode, s)) for s in sents)
-    else:
-        return tuple(map(vocab.encode, sents))
 
 
 def dataset_to_cols(dataset, conf):
@@ -123,26 +59,6 @@ def to_batches(rows, batch_size, sort=False):
         yield batch
         i += batch_size
         batch = rows[i: i + batch_size]
-
-
-def visualise_dict(d, num_items=50):
-    buff = []
-    window_width = os.get_terminal_size().columns
-    widths = (15, 2, 5)
-    lentry_width, pad, rentry_width = widths
-    entry_width = sum(widths)
-    per_line = window_width//entry_width
-    fmt = ('{w:%d.%d}%s{i:%d.%d}'
-            % (lentry_width, lentry_width, ' '*pad, rentry_width, rentry_width))
-    for i, (key, val) in enumerate(d.items()):
-        buff.append((key, val))
-        if len(buff) == per_line:
-            print(' '.join((fmt.format(w=w, i=str(i)) for w, i in buff)))
-            buff = []
-        if i > num_items:
-            break
-    print(' '.join((fmt.format(w=w, i=str(i)) for w, i in buff)))
-    print('\n\n')
 
 
 def train_epoch(model, optimizer, buckets, data_size):

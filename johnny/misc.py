@@ -249,3 +249,23 @@ def discrete_print(string):
     filler = '\n' * newlines
     cursor_move = '\033[%dA\033[100D' % newlines
     return '%s%s\n%s%s' % (filler, cursor_move, string, cursor_move)
+
+
+def visualise_dict(d, num_items=50):
+    buff = []
+    window_width = os.get_terminal_size().columns
+    widths = (15, 2, 5)
+    lentry_width, pad, rentry_width = widths
+    entry_width = sum(widths)
+    per_line = window_width//entry_width
+    fmt = ('{w:%d.%d}%s{i:%d.%d}'
+            % (lentry_width, lentry_width, ' '*pad, rentry_width, rentry_width))
+    for i, (key, val) in enumerate(d.items()):
+        buff.append((key, val))
+        if len(buff) == per_line:
+            print(' '.join((fmt.format(w=w, i=str(i)) for w, i in buff)))
+            buff = []
+        if i > num_items:
+            break
+    print(' '.join((fmt.format(w=w, i=str(i)) for w, i in buff)))
+    print('\n\n')
