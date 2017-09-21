@@ -5,7 +5,7 @@ import chainer.links as L
 import chainer
 from time import sleep
 from chainer import Variable, cuda
-from johnny.utils import bar, discrete_print
+from johnny.misc import bar, discrete_print
 from johnny.extern import DependencyDecoder
 from johnny.vocab import UDepVocab
 

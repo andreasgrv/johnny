@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pytest
-from johnny.utils import BucketManager, Experiment
+from johnny.misc import BucketManager, Experiment
 from johnny import EXP_ENV_VAR
 
 def test_basic():

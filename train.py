@@ -10,8 +10,8 @@ from itertools import chain
 from collections import namedtuple
 from johnny import EXP_ENV_VAR
 from johnny.dep import UDepLoader
-from johnny.vocab import Vocab, AbstractVocab, UDepVocab # , UPOSVocab
-from johnny.utils import BucketManager
+from johnny.vocab import Vocab, UDepVocab # , UPOSVocab
+from johnny.misc import BucketManager
 from johnny.metrics import Average, UAS, LAS
 import johnny.preprocess as pp
 
