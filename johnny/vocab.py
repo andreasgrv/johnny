@@ -168,9 +168,9 @@ class UPOSVocab(object):
             'NOUN', 'NUM', 'PART', 'PRON', 'PROPN', 'PUNCT',
             'SCONJ', 'SYM', 'VERB', 'X']
 
-    def __init__(self):
+    def __init__(self, with_reserved=False):
         super(UPOSVocab, self).__init__()
-        self.tags = list(RESERVED.keys())
+        self.tags = list(RESERVED.keys()) if with_reserved else []
         self.tags.extend(self.TAGS)
         self.index = dict((key, index) for index, key in enumerate(self.tags))
         self.rev_index = dict((val, key) for key, val in self.index.items())
