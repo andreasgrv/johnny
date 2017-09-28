@@ -1,24 +1,22 @@
 import os
 import sys
 import dill
+import yaml
 import chainer
 import numpy as np
 from mlconf import YAMLLoaderAction, ArgumentParser
 from tqdm import tqdm
 from itertools import chain
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from johnny import EXP_ENV_VAR
 from johnny.dep import UDepLoader
-from johnny.vocab import Vocab, UDepVocab # , UPOSVocab
+from johnny.vocab import Vocab, UDepVocab, UPOSVocab
 from johnny.misc import visualise_dict, BucketManager
 from johnny.metrics import Average, UAS, LAS
 from johnny.text_utils import process_text, encode_texts
 
 
 np.set_printoptions(precision=5, suppress=True)
-
-vocab_tup = namedtuple('Vocabs', ('text', 'arcs'))
-data_tup = namedtuple('DataCols', ('text', 'heads', 'arcs'))
 
 
 def seed_chainer(seed, gpu_id):
@@ -34,20 +32,27 @@ def seed_chainer(seed, gpu_id):
 
 
 def dataset_to_cols(dataset, conf):
+    data_tup = namedtuple('DataCols', ('text', 'heads', 'arcs', 'pos_tags'))
     text = tuple(process_text(s, conf.ngram, conf.subword, conf.preprocess)
                  for s in dataset.words)
-    return data_tup(text, dataset.heads, dataset.arctags)
+    return data_tup(text, dataset.heads, dataset.arctags, dataset.upostags)
 
 
 def data_to_rows(data, vocabs, conf):
     """Encodes input using vocabs where needed and returns a tuple of
     rows. Each row is a training instance containing both inputs and
     targets (inputs first, targets later)."""
-    text_ids = encode_texts(data.text, vocabs.text, conf.subword)
-    label_ids = tuple(map(vocabs.arcs.encode, data.arcs))
-    # NOTE: The order of the following args in the zip matters
-    data_rows = zip(text_ids, data.heads, label_ids)
-    return tuple(data_rows)
+    cols = []
+    # add texts
+    cols.append(encode_texts(data.text, vocabs.text, conf.subword))
+    # add heads
+    cols.append(data.heads)
+    # add arc labels
+    cols.append(tuple(map(vocabs.arcs.encode, data.arcs)))
+    if conf.model.predict_pos:
+        cols.append(tuple(map(vocabs.pos_tags.encode, data.pos_tags)))
+    # NOTE: order of cols matters because we rely on it during unpacking.
+    return tuple(zip(*cols))
 
 
 def to_batches(rows, batch_size, sort=False):
@@ -63,18 +68,30 @@ def to_batches(rows, batch_size, sort=False):
 
 def train_epoch(model, optimizer, buckets, data_size):
     iters = 0
-    tf_str = 'Train: batch_size={0:d}, mean loss={1:.2f}, mean LAS={3:.3f} mean UAS={2:.3f}'
+    tf_str = 'Train: batch_size={0:d}, mean loss={1:.2f}, mean LAS={2:.3f} mean UAS={3:.3f} mean POS={4:.3f}'
     with tqdm(total=data_size, leave=False) as pbar, \
         chainer.using_config('train', True):
 
         mean_loss = Average()
         u_scorer = UAS()
         l_scorer = LAS()
+        t_scorer = UAS()
         for batch in buckets:
             seqs = list(zip(*batch))
+            pos_tag_batch = seqs.pop() if model.predict_pos else None
             label_batch = seqs.pop()
             head_batch = seqs.pop()
-            arc_preds, lbl_preds = model(*seqs, heads=head_batch, labels=label_batch)
+            if model.predict_pos:
+                arc_preds, lbl_preds, tag_preds = model(*seqs,
+                                                        heads=head_batch,
+                                                        labels=label_batch,
+                                                        pos_tags=pos_tag_batch)
+
+            else:
+                arc_preds, lbl_preds = model(*seqs,
+                                             heads=head_batch,
+                                             labels=label_batch,
+                                             pos_tags=pos_tag_batch)
             loss = model.loss
             model.cleargrads()
             loss.backward()
@@ -82,11 +99,19 @@ def train_epoch(model, optimizer, buckets, data_size):
 
             loss_value = float(loss.data)
 
-            for p_arcs, p_lbls, t_arcs, t_lbls in zip(arc_preds, lbl_preds, head_batch, label_batch):
-                u_scorer(arcs=(p_arcs, t_arcs))
-                l_scorer(arcs=(p_arcs, t_arcs), labels=(p_lbls, t_lbls))
+            if model.predict_pos:
+                for p_arcs, p_lbls, p_tags, t_arcs, t_lbls, t_tags \
+                        in zip(arc_preds, lbl_preds, tag_preds, head_batch, label_batch, pos_tag_batch):
+                    u_scorer(arcs=(p_arcs, t_arcs))
+                    l_scorer(arcs=(p_arcs, t_arcs), labels=(p_lbls, t_lbls))
+                    t_scorer(arcs=(p_tags, t_tags))
+            else:
+                for p_arcs, p_lbls, t_arcs, t_lbls in zip(arc_preds, lbl_preds, head_batch, label_batch):
+                    u_scorer(arcs=(p_arcs, t_arcs))
+                    l_scorer(arcs=(p_arcs, t_arcs), labels=(p_lbls, t_lbls))
+
             mean_loss(loss_value)
-            out_str = tf_str.format(len(batch), mean_loss.score, u_scorer.score, l_scorer.score)
+            out_str = tf_str.format(len(batch), mean_loss.score, l_scorer.score, u_scorer.score, t_scorer.score)
             pbar.set_description(out_str)
             iters += len(batch)
             pbar.update(len(batch))
@@ -96,7 +121,8 @@ def train_epoch(model, optimizer, buckets, data_size):
     stats = {'train_time': time_taken,
              'train_mean_loss': mean_loss.score,
              'train_uas': u_scorer.score,
-             'train_las': l_scorer.score}
+             'train_las': l_scorer.score,
+             'train_pos': t_scorer.score}
     return stats
 
 
@@ -105,7 +131,7 @@ def eval_epoch(model, buckets, data_size, label='', num_labels=None):
         return '%s_%s' % (label, stat)
 
     tf_str = ('Eval - %s : batch_size={0:d}, mean loss={1:.2f}, '
-              'mean UAS={2:.3f} mean LAS={3:.3f}' % label)
+              'mean UAS={2:.3f} mean LAS={3:.3f} mean POS={4:.3f}' % label)
     with tqdm(total=data_size, leave=False) as pbar, \
         chainer.using_config('train', False), \
         chainer.no_backprop_mode():
@@ -113,21 +139,41 @@ def eval_epoch(model, buckets, data_size, label='', num_labels=None):
         mean_loss = Average()
         u_scorer = UAS()
         l_scorer = LAS(num_labels=num_labels)
+        t_scorer = UAS()
         for batch in buckets:
             # model.reset_state()
             seqs = list(zip(*batch))
+            pos_tag_batch = seqs.pop() if model.predict_pos else None
             label_batch = seqs.pop()
             head_batch = seqs.pop()
-            arc_preds, lbl_preds = model(*seqs, heads=head_batch, labels=label_batch)
+            if model.predict_pos:
+                arc_preds, lbl_preds, tag_preds = model(*seqs,
+                                                        heads=head_batch,
+                                                        labels=label_batch,
+                                                        pos_tags=pos_tag_batch)
+
+            else:
+                arc_preds, lbl_preds = model(*seqs,
+                                             heads=head_batch,
+                                             labels=label_batch,
+                                             pos_tags=pos_tag_batch)
             loss = model.loss
 
             loss_value = float(loss.data)
 
-            for p_arcs, p_lbls, t_arcs, t_lbls in zip(arc_preds, lbl_preds, head_batch, label_batch):
-                u_scorer(arcs=(p_arcs, t_arcs))
-                l_scorer(arcs=(p_arcs, t_arcs), labels=(p_lbls, t_lbls))
+            if model.predict_pos:
+                for p_arcs, p_lbls, p_tags, t_arcs, t_lbls, t_tags \
+                        in zip(arc_preds, lbl_preds, tag_preds, head_batch, label_batch, pos_tag_batch):
+                    u_scorer(arcs=(p_arcs, t_arcs))
+                    l_scorer(arcs=(p_arcs, t_arcs), labels=(p_lbls, t_lbls))
+                    t_scorer(arcs=(p_tags, t_tags))
+            else:
+                for p_arcs, p_lbls, t_arcs, t_lbls in zip(arc_preds, lbl_preds, head_batch, label_batch):
+                    u_scorer(arcs=(p_arcs, t_arcs))
+                    l_scorer(arcs=(p_arcs, t_arcs), labels=(p_lbls, t_lbls))
+
             mean_loss(loss_value)
-            out_str = tf_str.format(len(batch), mean_loss.score, u_scorer.score, l_scorer.score)
+            out_str = tf_str.format(len(batch), mean_loss.score, u_scorer.score, l_scorer.score, t_scorer.score)
             pbar.set_description(out_str)
             pbar.update(len(batch))
     # if num_labels is None:
@@ -137,7 +183,8 @@ def eval_epoch(model, buckets, data_size, label='', num_labels=None):
     # conf_matrix = [[]]
     stats = {label_stat('mean_loss'): mean_loss.score,
              label_stat('uas'): u_scorer.score,
-             label_stat('las'): l_scorer.score}
+             label_stat('las'): l_scorer.score,
+             label_stat('pos'): t_scorer.score}
              # label_stat('conf_matrix'): conf_matrix}
     return stats
 
@@ -264,7 +311,14 @@ if __name__ == "__main__":
     else:
         v_word = v_word.fit(chain.from_iterable(t_data.text))
 
-    vocabs = vocab_tup(v_word, v_arcs)
+    # when also training the model as a part of speech tagger
+    if conf.model.predict_pos:
+        vocab_tup = namedtuple('Vocabs', ('text', 'arcs', 'pos_tags'))
+        v_pos = UPOSVocab()
+        vocabs = vocab_tup(v_word, v_arcs, v_pos)
+    else:
+        vocab_tup = namedtuple('Vocabs', ('text', 'arcs'))
+        vocabs = vocab_tup(v_word, v_arcs)
 
     # visualise vocabs
     if conf.verbose:
@@ -282,6 +336,8 @@ if __name__ == "__main__":
     else:
         conf.model.encoder.embedder.in_sizes = [len(v_word)]
     conf.model.num_labels = len(v_arcs)
+    if conf.model.predict_pos:
+        conf.model.num_pos_tags = len(v_pos)
 
     # built_conf has all class representations instantiated
     # we need this here because otherwise we wouldn't be able to set random seed
@@ -298,6 +354,7 @@ if __name__ == "__main__":
     blueprint_filename = '%s.bp' % filename
     model_filename = '%s.model' % filename
     vocab_filename = '%s.vocab' % filename
+    stats_filename = '%s.stats' % filename
     dataset_folder = os.path.join(outfolder, conf.dataset.name.lower())
     if not os.path.isdir(dataset_folder):
         os.mkdir(dataset_folder)
@@ -307,20 +364,19 @@ if __name__ == "__main__":
     blueprint_path = os.path.join(lang_folder, blueprint_filename)
     model_path = os.path.join(lang_folder, model_filename)
     vocab_path = os.path.join(lang_folder, vocab_filename)
+    stats_path = os.path.join(lang_folder, stats_filename)
 
     # prepare for results
-    conf.results = dict()
+    stats = defaultdict(list)
 
     def on_epoch_end(epoch, epoch_stats, improved):
-        if conf.results:
-            for key, value in epoch_stats.items():
-                conf.results[key].append(value)
-        else:
-            for key, value in epoch_stats.items():
-                conf.results[key] = [value]
         if improved:
             print(' Saving model..')
             chainer.serializers.save_npz(model_path, built_conf.model)
+        for key, value in epoch_stats.items():
+            stats[key].append(value)
+        with open(stats_path, 'w') as stats_out:
+            stats_out.write(yaml.dump(dict(stats)))
 
     if conf.visualise:
         import pynput

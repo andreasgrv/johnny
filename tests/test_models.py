@@ -5,7 +5,7 @@ from johnny.models import GraphParser
 from johnny.components import Embedder, SentenceEncoder
 from chainer import optimizers
 
-SEED = 13
+SEED = 15
 
 @pytest.fixture
 def simple_word_model():

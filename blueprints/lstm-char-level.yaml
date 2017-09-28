@@ -1,11 +1,11 @@
 seed: 43
 ngram: 1
-subword: True
+subword: true
 max_epochs: 1000
 batch_size: 32
 dev_batch_size: 256
 vocab:
-  size: 100
+  size: 200
   threshold: 10
 dataset:
   name: CONLL2017_v2_0
@@ -29,7 +29,7 @@ model:
         num_layers: 1
         rec_dropout: 0.6
         inp_dropout: 0.2
-        use_bilstm: True
+        use_bilstm: true
     num_layers: 2
     num_units: 200
     use_bilstm: true
@@ -39,6 +39,7 @@ model:
   lbl_dropout: 0.6
   num_labels: dunno
   treeify: none
+  predict_pos: true
 optimizer:
   grad_clip: 5
   learning_rate: 0.001

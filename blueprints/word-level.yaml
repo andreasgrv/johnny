@@ -1,5 +1,5 @@
 ngram: 1
-subword: False
+subword: false
 seed: 43
 max_epochs: 1000
 batch_size: 32
@@ -34,6 +34,7 @@ model:
   lbl_dropout: 0.6
   num_labels: dunno
   treeify: none
+  predict_pos: true
 optimizer:
   grad_clip: 5
   learning_rate: 0.001
