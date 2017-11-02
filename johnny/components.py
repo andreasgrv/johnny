@@ -9,6 +9,7 @@ from johnny.vocab import augment_seq, augment_seq_nested, augment_word, reserved
 
 CHAINER_IGNORE_LABEL = -1
 
+
 class Embedder(chainer.Chain):
     """A general embedder that concatenates the embeddings of an arbitrary
     number of input sequences."""
@@ -18,7 +19,7 @@ class Embedder(chainer.Chain):
         :in_sizes: list of ints specifying the input vocabulary size for each
         sequence.
         :out_sizes: list of ints specifying embedding size for each sequence.
-        :dropout: float between 0 and 1, how much dropout to apply to the input.
+        :dropout: float between 0 and 1, how much dropout to apply to the input
 
         As an example, suppose we want to encode words and part of speech
         tags. If we want: word vocab -> 100 , word emb size -> 100,
@@ -306,7 +307,8 @@ class CNNWordEncoder(chainer.Chain):
     IGNORE_LABEL = -1
 
     def __init__(self, vocab_size, embed_units=15, num_highway_layers=1,
-                 highway_dropout=0.0, ngrams=(1, 2, 3, 4, 5, 6), stride=1, num_filters=None):
+                 highway_dropout=0.0, ngrams=(1, 2, 3, 4, 5, 6), stride=1,
+                 num_filters=None, batch_norm=False):
 
         super(CNNWordEncoder, self).__init__()
         if num_filters is None:
@@ -326,16 +328,20 @@ class CNNWordEncoder(chainer.Chain):
             #     setattr(self, self.cnn_blocks[n])
             for i, name in enumerate(self.cnn_blocks):
                 setattr(self, name, L.Convolution2D(1,
-                                       num_filters[i],
-                                       (ngrams[i], embed_units),
-                                       stride))
+                        num_filters[i],
+                        (ngrams[i], embed_units),
+                        stride))
+            if batch_norm:
+                self.batch_norm = L.BatchNormalization(out_size)
             for name in self.highways:
                 # init_bt -2 used in Kim paper
                 setattr(self, name, L.Highway(out_size, init_bt=-2))
+
         self.vocab_size = vocab_size
         self.embed_units = embed_units
         self.num_highway_layers = num_highway_layers
         self.highway_dropout = highway_dropout
+        self.use_batch_norm = batch_norm
         # highway doesn't change dimensionality
         self.out_size = out_size
         self.cache = dict()
@@ -346,77 +352,55 @@ class CNNWordEncoder(chainer.Chain):
     def encode_words(self, word_list):
 
         batch_size = len(word_list)
-        sorted_word_list = sorted(word_list, key=lambda x: len(x), reverse=True)
+        width = np.max(tuple(map(len, word_list)))
+        if width < self.min_width:
+            width = self.min_width
+        word_vars = F.concat([chainer.Variable(self.xp.array([w[i]
+                                               if i < len(w)
+                                               else reserved.PAD
+                                               for i in range(width)],
+                                               dtype=self.xp.int32))
+                              for w in word_list], axis=0)
 
-        # split into parts - because there will be very few very long words
-        # might as well pack them together to avoid wasting computation on padding
-        # NOTE: batch size here is number of words in each batch of encoder
-        # so for 32 batch size this can be 1000
-        SPLIT_INDEX = int(0.1 * batch_size)
-        if SPLIT_INDEX > 0:
-            batch_split = np.array_split(sorted_word_list, [SPLIT_INDEX])
-        else:
-            batch_split = [sorted_word_list]
+        embeddings = self.embed_layer(word_vars)
 
-        acts = None
-        for shard in batch_split:
+        stacked = F.reshape(embeddings, (batch_size, -1, self.embed_units))
 
-            shard_len = len(shard)
-            shard_longest_word = len(shard[0])
-            width = shard_longest_word
-            if width < self.min_width:
-                width = self.min_width
-            word_vars = F.concat([chainer.Variable(self.xp.array([w[i]
-                                                   if i < len(w)
-                                                   else reserved.PAD
-                                                   for i in range(width)],
-                                                   dtype=self.xp.int32))
-                                          for w in shard], axis=0)
+        stacked = F.expand_dims(stacked, axis=1)
 
-            embeddings = self.embed_layer(word_vars)
+        # for each in batch_embeddings:
+        acts = []
+        for block in self.cnn_blocks:
+            h = self[block](stacked)
+            h = F.relu(h)
+            # NOTE: batch_size is num_words in batch
+            # h shape : batch_size x num_filters x sent_len x 1
+            # =============================================================
+            # h = F.max_pooling_2d(h, (width,
+            #                          self.embed_units))
+            # =============================================================
+            # NOTE: below max is max pooling over "time".
+            # we are practically only keeping the max over the sequence
+            # so we don't need to use the max pooling 2d function
+            # which is much slower (especially on cpu)
+            h = F.max(h, 2)
+            # collapse last dimension
+            h = F.squeeze(h, 2)
+            # h shape : batch_size x num_filters
+            acts.append(h)
+        act = F.concat(acts, axis=1)
+        if self.use_batch_norm:
+            act = self.batch_norm(act)
 
-            stacked = F.reshape(embeddings, (shard_len, -1, self.embed_units))
+        # Don't apply dropout to last layer
+        for highway in self.highways:
+            if self.highway_dropout > 0.:
+                act = F.dropout(act, ratio=self.highway_dropout)
+            act = self[highway](act)
 
-            stacked = F.expand_dims(stacked, axis=1)
+        self.embedding = act
 
-            # for each in batch_embeddings:
-            act = None
-            for block in self.cnn_blocks:
-                h = self[block](stacked)
-                h = F.tanh(h)
-                # NOTE: batch_size is num_words in batch
-                # h shape : batch_size x num_filters x sent_len x 1
-                # =============================================================
-                # h = F.max_pooling_2d(h, (width,
-                #                          self.embed_units))
-                # =============================================================
-                # NOTE: below max is max pooling over "time".
-                # we are practically only keeping the max over the sequence
-                # so we don't need to use the max pooling 2d function
-                # which is much slower (especially on cpu)
-                h = F.max(h, 2)
-                # collapse last dimension
-                h = F.squeeze(h, 2)
-                # h shape : batch_size x num_filters
-                if act is None:
-                    act = h
-                else:
-                    # stack ngram filter activations along num_filters axis
-                    act = F.concat([act, h], axis=1)
-
-            # Don't apply dropout to last layer
-            for highway in self.highways:
-                if self.highway_dropout > 0.:
-                    act = F.dropout(act, ratio=self.highway_dropout)
-                act = self[highway](act)
-            if acts is None:
-                acts = act
-            else:
-                acts = F.vstack([acts, act])
-
-        self.embedding = acts
-
-        for i, word in enumerate(sorted_word_list):
+        for i, word in enumerate(word_list):
             self.cache[tuple(word)] = i
 
     def word_to_index(self, word):

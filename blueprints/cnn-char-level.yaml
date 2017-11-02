@@ -2,8 +2,8 @@ seed: 43
 ngram: 1
 subword: true
 max_epochs: 1000
-batch_size: 16
-dev_batch_size: 256
+batch_size: 32
+dev_batch_size: 32
 vocab:
   size: 200
   threshold: 10
@@ -26,6 +26,7 @@ model:
         $classname: CNNWordEncoder
         vocab_size: dunno
         embed_units: 15
+        batch_norm: true
         ngrams: [1, 2, 3, 4, 5, 6]
         # num_filters: [25, 50, 75, 100, 125, 150]
         num_filters: [20, 45, 70, 95, 120, 145]
@@ -54,5 +55,5 @@ train_buckets:
   bucket_width: 5
   right_leak: 5
 checkpoint:
-  patience: 50
-  every: 200
+  patience: 10
+  every: 100
