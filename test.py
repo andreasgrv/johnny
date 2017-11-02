@@ -1,8 +1,9 @@
 import chainer
 import dill
+import numpy as np
 from tqdm import tqdm
 from johnny.dep import UDepLoader
-from johnny.metrics import Average, UAS, LAS
+from johnny.metrics import Average, UAS, LAS, POSAccuracy
 from johnny.misc import visualise_dict
 from train import dataset_to_cols, data_to_rows, to_batches
 from mlconf import ArgumentParser, Blueprint
@@ -40,8 +41,12 @@ def test_loop(bp, test_set):
     chainer.serializers.load_npz(model_path, model)
 
     # test
-    tf_str = ('Eval - test : batch_size={0:d}, mean loss={1:.2f}, '
-              'mean UAS={2:.3f} mean LAS={3:.3f}')
+    if model.predict_pos:
+        tf_str = ('Eval - test : batch_size={0:d}, mean loss={1:.2f}, '
+                'mean UAS={2:.3f} mean LAS={3:.3f} mean POS={4:.3f}')
+    else:
+        tf_str = ('Eval - test : batch_size={0:d}, mean loss={1:.2f}, '
+                  'mean UAS={2:.3f} mean LAS={3:.3f}')
     with tqdm(total=len(test_set)) as pbar, \
         chainer.using_config('train', False), \
         chainer.no_backprop_mode():
@@ -49,6 +54,8 @@ def test_loop(bp, test_set):
         mean_loss = Average()
         u_scorer = UAS()
         l_scorer = LAS()
+        if model.predict_pos:
+            t_scorer = POSAccuracy()
         index = 0
         # NOTE: IMPORTANT!!
         # BATCH SIZE is important here to reproduce the results
@@ -56,26 +63,36 @@ def test_loop(bp, test_set):
         # has the effect of different words having different padding.
         # NOTE: test_mean_loss changes because it is averaged
         # across batches, so changing the number of batches affects it
-        BATCH_SIZE = 256
+        BATCH_SIZE = bp.batch_size   # it's better to use the same batch size
         for batch in to_batches(test_rows, BATCH_SIZE, sort=False):
             batch_size = 0
             seqs = list(zip(*batch))
+            pos_batch = seqs.pop() if model.predict_pos else None
             label_batch = seqs.pop()
             head_batch = seqs.pop()
-            arc_preds, lbl_preds = model(*seqs, heads=head_batch, labels=label_batch)
+            if model.predict_pos:
+                arc_preds, lbl_preds, pos_preds = model(*seqs, heads=head_batch, labels=label_batch, pos_tags=pos_batch)
+            else:
+                arc_preds, lbl_preds = model(*seqs, heads=head_batch, labels=label_batch)
             loss = model.loss
             loss_value = float(loss.data)
 
-            for p_arcs, p_lbls, t_arcs, t_lbls in zip(arc_preds, lbl_preds, head_batch, label_batch):
+            for p_arcs, p_lbls, p_tags, t_arcs, t_lbls, t_tags in \
+                    zip(arc_preds, lbl_preds, pos_preds, head_batch, label_batch, pos_batch):
                 u_scorer(arcs=(p_arcs, t_arcs))
                 l_scorer(arcs=(p_arcs, t_arcs), labels=(p_lbls, t_lbls))
+                if model.predict_pos:
+                    t_scorer(tags=(p_tags, t_tags))
                 test_set[index].set_heads(p_arcs)
                 str_labels = (vocabs.arcs.rev_index[l] for l in p_lbls)
                 test_set[index].set_labels(str_labels)
                 index += 1
                 batch_size += 1
             mean_loss(loss_value)
-            out_str = tf_str.format(batch_size, mean_loss.score, u_scorer.score, l_scorer.score)
+            if model.predict_pos:
+                out_str = tf_str.format(batch_size, mean_loss.score, u_scorer.score, l_scorer.score, t_scorer.score)
+            else:
+                out_str = tf_str.format(batch_size, mean_loss.score, u_scorer.score, l_scorer.score)
             pbar.set_description(out_str)
             pbar.update(batch_size)
     # make sure you aren't a dodo

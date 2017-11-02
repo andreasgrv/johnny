@@ -23,6 +23,23 @@ class Average(object):
         return self.cumsum / self.count if self.count else 0.0
 
 
+class POSAccuracy(Average):
+
+    '''Part of speech Accuracy Score - Scorer'''
+
+    def __init__(self, label='POS'):
+        Average.__init__(self, label)
+
+    def __call__(self, tags=None):
+        pred_tags, true_tags = tags
+        preds = np.asarray(pred_tags)
+        truth = np.asarray(true_tags)
+        correct = float(np.sum(preds == truth))
+        self.count += len(preds)
+        self.cumsum += correct
+        return self.cumsum / self.count if self.count else 0.0
+
+
 class UAS(Average):
 
     '''Unlabelled Attachment Score - Scorer'''
