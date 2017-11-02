@@ -55,5 +55,5 @@ train_buckets:
   bucket_width: 5
   right_leak: 5
 checkpoint:
-  patience: 10
+  patience: 20
   every: 100

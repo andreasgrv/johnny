@@ -3,7 +3,7 @@ ngram: 1
 subword: true
 max_epochs: 1000
 batch_size: 32
-dev_batch_size: 256
+dev_batch_size: 32
 vocab:
   size: 200
   threshold: 10
@@ -53,5 +53,5 @@ train_buckets:
   bucket_width: 5
   right_leak: 5
 checkpoint:
-  patience: 50
+  patience: 20
   every: 100

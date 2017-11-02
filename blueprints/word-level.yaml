@@ -3,7 +3,7 @@ subword: false
 seed: 43
 max_epochs: 1000
 batch_size: 32
-dev_batch_size: 256
+dev_batch_size: 32
 vocab:
   size: 5000
   threshold: 0
@@ -48,5 +48,5 @@ train_buckets:
   bucket_width: 5
   right_leak: 5
 checkpoint:
-  patience: 50
+  patience: 20
   every: 100
