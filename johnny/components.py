@@ -261,6 +261,8 @@ class LSTMWordEncoder(chainer.Chain):
                                                    num_units,
                                                    num_units,
                                                    rec_dropout,
+                                                   None,
+                                                   None,
                                                    use_bi_direction=use_bilstm)
         self.vocab_size = vocab_size
         self.num_units = num_units
