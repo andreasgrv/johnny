@@ -1,13 +1,6 @@
 # [![Build Status](https://api.travis-ci.org/andreasgrv/johnny.svg?branch=master)](https://travis-ci.org/andreasgrv/johnny) Johnny - DEPendency Parser
 
-This is a work in progress.
-I have uploaded the training scripts to replicate the work done in my
-dissertation but I am still adding more.
 For a web visualisation for English and Greek see [here](http://johnny.overfit.xyz).
-
-Upcoming:
-
-* Pretrained models
 
 ### What is johnny?
 
