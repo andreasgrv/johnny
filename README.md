@@ -4,7 +4,7 @@ For a web visualisation for English and Greek see [here](http://johnny.overfit.x
 
 ### What is johnny?
 
-This is an implementation of a graph based arc factored neural dependency parser implemented using [Chainer](https://chainer.org/).
+This is an implementation of a graph based arc factored neural dependency parser implemented using [Chainer](https://chainer.org/). Note that the version of chainer used is v3.0.0 (see requirements.txt).
 There are 3 encoders that can be used with this parser.
 
 * [Word-BILSTM](blueprints/word-level.yaml),
@@ -40,8 +40,7 @@ This will probably look something like "ud-treebanks-v2.0".
 
 To train models you can use the default blueprints I used, similar to the ones
 used in my dissertation (For blueprints that use part of speech tags as input
-you need to checkout v0.0.1). Alternatively,
-if you are in for a thrill, you can override the settings to see
+you need to checkout v0.0.1). Alternatively, if you are in for a thrill, you can override the settings to see
 what happens. The blueprints can be found under the blueprints folder.
 
 As an example, to train a parser using the Char-BILSTM encoder on the Universal Dependencies
