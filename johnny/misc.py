@@ -179,11 +179,11 @@ class Experiment(object):
         self.results['test_results'] = results
 
     def to_yaml(self):
-        return yaml.dump(self.__dict__, default_flow_style=False)
+        return yaml.safe_dump(self.__dict__, default_flow_style=False)
 
     @classmethod
     def from_yaml(cl, yaml_string):
-        return cl(**yaml.load(yaml_string))
+        return cl(**yaml.safe_load(yaml_string))
 
     @staticmethod
     def _get_dir_path(exp_folder):
@@ -223,7 +223,7 @@ class Experiment(object):
     @classmethod
     def load(cl, filename):
         with open(filename, 'r') as f:
-            yml = yaml.load(f.read())
+            yml = yaml.safe_load(f.read())
         return cl(**yml)
 
     @property

@@ -2,7 +2,7 @@ chainer==3.5.0
 # cupy==2.5.0
 six==1.10.0
 dill==0.2.7
-PyYAML==4.2b2
+PyYAML==3.13
 tqdm==4.14.0  # needed for train.py and test.py only                                                     
-mlconf==0.0.3 # needed for train.py and test.py only
+mlconf==0.0.4 # needed for train.py and test.py only
 pynput==1.3.5 # needed for visualisation                                                      
