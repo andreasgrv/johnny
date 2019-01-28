@@ -4,7 +4,7 @@ For a web visualisation for English and Greek see [here](http://johnny.overfit.x
 
 ### What is johnny?
 
-This is an implementation of a graph based arc factored neural dependency parser implemented using [Chainer](https://chainer.org/). Note that the version of chainer used is v3.0.0 (see requirements.txt).
+This is an implementation of a graph based arc factored neural dependency parser implemented using [Chainer](https://chainer.org/). Note that the version of chainer used is v3.5.0 and cupy v2.5.0 if you want to train using a gpu (see requirements.txt).
 There are 3 encoders that can be used with this parser.
 
 * [Word-BILSTM](blueprints/word-level.yaml),
