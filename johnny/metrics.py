@@ -34,6 +34,7 @@ class POSAccuracy(Average):
         pred_tags, true_tags = tags
         preds = np.asarray(pred_tags)
         truth = np.asarray(true_tags)
+        assert(preds.shape == truth.shape)
         correct = float(np.sum(preds == truth))
         self.count += len(preds)
         self.cumsum += correct
@@ -51,6 +52,7 @@ class UAS(Average):
         pred_arcs, true_arcs = arcs
         preds = np.asarray(pred_arcs)
         truth = np.asarray(true_arcs)
+        assert(preds.shape == truth.shape)
         correct = float(np.sum(preds == truth))
         self.count += len(preds)
         self.cumsum += correct
@@ -75,6 +77,8 @@ class LAS(Average):
         t_arcs = np.asarray(true_arcs)
         p_labels = np.asarray(pred_labels)
         t_labels = np.asarray(true_labels)
+        assert(p_arcs.shape == t_arcs.shape)
+        assert(p_labels.shape == t_labels.shape)
         if self.num_labels is not None:
             self.conf_matrix[p_labels, t_labels] += 1
         correct = float(np.sum((p_arcs == t_arcs) & (p_labels == t_labels)))
