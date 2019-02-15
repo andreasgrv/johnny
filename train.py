@@ -26,9 +26,9 @@ def seed_chainer(seed, gpu_id):
         # TODO: ask chainer devs about this?
         # there seems to be no easy way to reset the seed!
         chainer.cuda.cupy.random.seed(seed)
-        chainer.cuda.cupy.random.get_random_state()
-        rs = chainer.functions.connection.n_step_rnn.DropoutRandomStates(seed)
-        chainer.functions.connection.n_step_rnn._random_states[gpu_id] = rs
+        # chainer.cuda.cupy.random.get_random_state()
+        # rs = chainer.functions.connection.n_step_rnn.DropoutRandomStates(seed)
+        # chainer.functions.connection.n_step_rnn._random_states[gpu_id] = rs
 
 
 def dataset_to_cols(dataset, conf):

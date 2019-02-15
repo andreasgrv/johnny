@@ -51,7 +51,7 @@ def test_pred_dimensionality_wrong_input(simple_word_model):
     oh_heads = [[1,0], [2,1,1,3]]
     oh_labels = [[1,0], [2,1,1,3],[0]]
 
-    with pytest.raises(IndexError):
+    with pytest.raises(AssertionError):
         r, l = simple_word_model(oh_words, heads=oh_heads, labels=oh_labels)
 
     # - If you don't give enough head training signal it's up to you
@@ -62,14 +62,14 @@ def test_pred_dimensionality_wrong_input(simple_word_model):
 def test_can_predict_correct(simple_word_model):
     oh_words = [[6,7], [1,2,3,4], [5]]
 
-    opt = optimizers.Adam(alpha=0.1)
+    opt = optimizers.Adam(alpha=0.03)
 
     opt.setup(simple_word_model)
 
     oh_heads = [[1,0], [2,3,1,3], [0]]
     oh_labels = [[3,5], [2,4,5,3],[2]]
     loss = 1000.
-    for i in range(10):
+    for i in range(25):
         r, l = simple_word_model(oh_words, heads=oh_heads, labels=oh_labels)
         new_loss = simple_word_model.loss.data
         assert(new_loss < loss)
@@ -78,8 +78,8 @@ def test_can_predict_correct(simple_word_model):
         simple_word_model.loss.backward()
         # update parameters
         opt.update()
-    assert([h.tolist() for h in r] == oh_heads)
-    assert([e.tolist() for e in l] == oh_labels)
+    assert([h for h in r] == oh_heads)
+    assert([e for e in l] == oh_labels)
 
 def test_batching_same_size_dropout(dropout_pos_model):
 
@@ -118,7 +118,7 @@ def test_batching_diff_size_dropout(dropout_pos_model):
     single_arcs = model2.arcs
     # NOTE: because the max length size is 4, the attention matrix is
     # squarish (not square cause of root) and padded
-    assert(np.allclose(batch_arcs[0,:3, :2], single_arcs[0, :3, :2]))
+    assert(np.allclose(batch_arcs[:2, :3], single_arcs[:2, :3]))
 
 def test_batching_same_size(simple_pos_model):
 
@@ -149,7 +149,7 @@ def test_batching_diff_size(simple_pos_model):
     single_arcs = simple_pos_model.arcs
     # NOTE: because the max length size is 4, the attention matrix is
     # squarish (not square cause of root) and padded
-    assert(np.allclose(batch_arcs[0,:3, :2], single_arcs))
+    assert(np.allclose(batch_arcs[:2, :3], single_arcs))
 
 def test_batched_preds_equal_non_batched_preds(simple_pos_model):
     oh_words = [[1,2], [1,2,3,4], [3]]

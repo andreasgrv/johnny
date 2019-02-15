@@ -4,6 +4,7 @@ import chainer.functions as F
 import chainer.links as L
 import chainer
 from time import sleep
+from itertools import chain
 from chainer import Variable, cuda
 from johnny.misc import bar, discrete_print
 from johnny.extern import DependencyDecoder
@@ -16,7 +17,7 @@ from johnny.vocab import UDepVocab
 # TODO Think of ways of avoiding self prediction
 class GraphParser(chainer.Chain):
 
-    MIN_PAD = -100.
+    MIN_PAD = -1e4
     TREE_OPTS = ['none', 'chu', 'eisner']
 
     def __init__(self,
@@ -66,8 +67,7 @@ class GraphParser(chainer.Chain):
             self.vT = L.Linear(self.mlp_arc_units, 1)
 
             # label prediction
-            self.U_lbl = L.Linear(embedding_units, self.mlp_lbl_units)
-            self.W_lbl = L.Linear(embedding_units, self.mlp_lbl_units)
+            self.W_lbl = L.Linear(self.mlp_arc_units, self.mlp_lbl_units)
             # output
             self.V_lblT = L.Linear(self.mlp_lbl_units, self.num_labels)
 
@@ -77,55 +77,45 @@ class GraphParser(chainer.Chain):
                 # output
                 self.V_tagT = L.Linear(self.mlp_lbl_units, self.num_labels)
 
-    def _predict_pos_tags(self, sent_states, batch_stats, sorted_pos_tags=None):
+    def _predict_pos_tags(self, sent_embeds, batch_stats, pos_tags=None):
         """ Predict the part of speech tag for each word in the sentence."""
-        batch_size, max_sent_len, col_lengths = batch_stats
+        batch_size, seq_lengths, max_sent_len = batch_stats
 
-        calc_loss = sorted_pos_tags is not None
+        calc_loss = pos_tags is not None
         if calc_loss:
-            pos_tags = self.encoder.transpose_batch(sorted_pos_tags)
+            pos_tags = chainer.Variable(
+                        self.xp.array(tuple(chain.from_iterable(pos_tags)))
+                       )
 
-        w_tag = self.W_tag(sent_states)
-        w_tag = F.reshape(w_tag, (-1, batch_size, self.mlp_tag_units))
+        w_tag = self.W_tag(sent_embeds)
 
-        sent_pos_tags = []
-        # we start from 1 because we don't consider root
-        for i in range(1, max_sent_len):
-            # num_active
-            num_active = col_lengths[i]
-            # if we are calculating loss create truth variables
-            if calc_loss:
-                # i-1 because sentence has root appended to beginning
-                gold_pos_tags = pos_tags[i-1][:num_active]
+        t_act = F.tanh(w_tag)
 
-            t_w = w_tag[i][:num_active]
-            t_act = F.reshape(F.tanh(t_w), (-1, self.mlp_tag_units))
+        if self.tag_dropout > 0.:
+            t_act = F.dropout(t_act, ratio=self.tag_dropout)
 
-            if self.tag_dropout > 0.:
-                t_act = F.dropout(t_act, ratio=self.tag_dropout)
+        tag_logits = self.V_tagT(t_act)
 
-            tags = self.V_tagT(t_act)
+        if calc_loss:
+            tags_loss = F.sum(F.softmax_cross_entropy(tag_logits, pos_tags, reduce='no'))
+            self.loss += tags_loss
 
-            # Calculate losses
-            if calc_loss:
-                tags_loss = F.sum(F.softmax_cross_entropy(tags[:num_active], gold_pos_tags[:num_active], reduce='no'))
-                self.loss += tags_loss
+        return tag_logits
 
-            reshaped_tags = F.reshape(tags, (num_active, -1, 1))
-            reshaped_tags = F.pad(reshaped_tags,
-                    ((0, batch_size - num_active),(0,0), (0,0)), 'constant')
-            sent_pos_tags.append(reshaped_tags)
-        pos_tags = F.concat(sent_pos_tags, axis=2)
-        return pos_tags
-
-    def _predict_heads(self, sent_states, mask, batch_stats, sorted_heads=None):
+    def _predict_heads(self, sent_embeds, root_embeds, batch_stats, heads=None):
         """ For each token in the sentence predict which token in the sentence
         is its head."""
 
-        batch_size, max_sent_len, col_lengths = batch_stats
+        batch_size, seq_lengths, max_sent_len = batch_stats
 
-        calc_loss = sorted_heads is not None
+        calc_loss = heads is not None
 
+        if calc_loss:
+            #TODO: Wrap heads in variable
+            heads = chainer.Variable(
+                        self.xp.array(tuple(chain.from_iterable(heads)))
+                    )
+        
         # In order to predict which head is most probable for a given word
         # For each token in the sentence we get a vector represention
         # for that token as a head, and another for that token as a dependent.
@@ -136,121 +126,103 @@ class GraphParser(chainer.Chain):
         # for each word, we consider all possible heads
         # we can pre-calculate U * a_j , for all a_j
         # head activations for each token lstm activation
-        h_arc = self.H_arc(sent_states)
-        # we transform results to be indexable by sentence index for upcoming for loop
-        # h_arc is now max_sent x bs x mlp_arc_units
-        h_arc = F.reshape(h_arc, (-1, batch_size, self.mlp_arc_units))
-        # bs * max_sent x mlp_arc_units
-        d_arc = self.D_arc(sent_states)
-        # max_sent x bs x mlp_arc_units
-        d_arc = F.reshape(d_arc, (-1, batch_size, self.mlp_arc_units))
+        # h_arc -> head representation | d_arc -> dependent representation
+        h_arc = self.H_arc(sent_embeds)
+        h_arc_root = self.H_arc(root_embeds)
 
-        # the values to use to mask softmax for head prediction
-        # e ^ -100 is ~ zero (can be changed from self.MIN_PAD)
-        mask_vals = Variable(self.xp.full((batch_size, max_sent_len),
-                                           self.MIN_PAD,
-                                           dtype=self.xp.float32))
+        d_arc = self.D_arc(sent_embeds)
 
-        sent_arcs = []
-        # we start from 1 because we don't consider root
-        for i in range(1, max_sent_len):
-            num_active = col_lengths[i]
-            # if we are calculating loss create truth variables
-            if calc_loss:
-                # i-1 because sentence has root appended to beginning
-                gold_heads = sorted_heads[i-1]
-            # ================== HEAD PREDICTION ======================
-            # NOTE Because some sentences may be shorter - only num_active of
-            # the batch have valid activations for this token. If in softmax
-            # we didn't limit arcs to [:num_active] we would need to replace
-            # embeddings that are out of sentence range with zeros - because
-            # otherwise when broadcasting and summing we will modify valid
-            # batch activations for earlier tokens of the sentence.
-            # ====================== Code for padding ==========================
-            # invalid_pad = ((0, int(batch_size - num_active)), (0, 0))
-            # d_arc_pad = F.pad(d_arc[i][:num_active],
-            #                   invalid_pad, 'constant', constant_values=0.)
-            # ==================================================================
-            a_u, a_w = F.broadcast(h_arc, d_arc[i])
+        def to_batched_heads(heads, roots, seq_lens):
+            """Put each root embedding before its batch."""
+            batched = F.vstack([roots, heads])
 
-            arc_logit = F.reshape(F.tanh(a_u + a_w), (-1, self.mlp_arc_units))
+            permute_roots = np.arange(roots.shape[0])
+            permute_roots[1:] += np.cumsum(seq_lens[:-1])
 
-            if self.arc_dropout > 0.:
-                arc_logit = F.dropout(arc_logit, ratio=self.arc_dropout)
+            permute_heads = np.arange(heads.shape[0]) + 1
+            permute_heads += np.repeat(np.arange(len(seq_lens)), seq_lens)
 
-            arc_logit = self.vT(arc_logit)
-            arcs = F.swapaxes(F.reshape(arc_logit, (-1, batch_size)), 0, 1)
-            arcs = F.where(mask, arcs, mask_vals)
-            # Calculate losses
-            if calc_loss:
-                # we don't want to average out over seen words yet
-                # NOTE: do not use ignore_label - in gpu mode gold_heads gets mutated
-                # and furthermore we would need to have padded invalid state of
-                # d_arc[i] with zeros before broadcasting. 
-                # see NOTE above
-                head_loss = F.sum(F.softmax_cross_entropy(arcs[:num_active], gold_heads[:num_active], reduce='no'))
-                self.loss += head_loss
-            sent_arcs.append(F.reshape(arcs, (batch_size, -1, 1)))
-        arcs = F.concat(sent_arcs, axis=2)
-        return arcs
+            permute_indices = np.hstack([permute_roots, permute_heads])
 
-    def _predict_labels(self, sent_states, pred_heads, gold_heads, batch_stats,
-                        sorted_labels=None):
-        """ Predict the label for each of the arcs predicted in _predict_heads."""
-        batch_size, max_sent_len, col_lengths = batch_stats
+            return F.permutate(batched, permute_indices, inv=True)
 
-        calc_loss = sorted_labels is not None
+        def repeat_deps(x, seq_lens):
+            # Extend the deps representations
+            seq = tuple(np.repeat(seq_lens + 1, seq_lens).tolist())
+            return F.repeat(x, seq, axis=0)
+
+        def tile_heads(x, seq_lens):
+            splits = np.cumsum(seq_lens[:-1] + 1)
+            return F.vstack(F.tile(part, (part.shape[0] - 1, 1))
+                            for part in F.split_axis(x, splits, axis=0))
+
+        h_embs = to_batched_heads(h_arc, h_arc_root, seq_lengths)
+        h_embs = tile_heads(h_embs, seq_lengths)
+
+        d_embs = repeat_deps(d_arc, seq_lengths)
+
+        arc_logit = F.tanh(d_embs + h_embs)
+
+        if self.arc_dropout > 0.:
+            arc_logit = F.dropout(arc_logit, ratio=self.arc_dropout)
+
+        self.label_logit = arc_logit
+
+        arc_logit = self.vT(arc_logit)
+
+        split_to_sents = np.repeat(seq_lengths + 1, seq_lengths)
+        split_to_sents = np.cumsum(split_to_sents[:-1])
+        self.split_to_sents = split_to_sents
+
+        decision_logits = F.split_axis(arc_logit, split_to_sents, axis=0)
+
+        arc_logits = F.pad_sequence(decision_logits, max_sent_len + 1, padding=self.MIN_PAD)
+        # Get rid of 3rd dimension
+        arc_logits = F.squeeze(arc_logits, axis=2)
+
         if calc_loss:
-            labels = self.encoder.transpose_batch(sorted_labels)
+            head_loss = F.sum(F.softmax_cross_entropy(arc_logits, heads, reduce='no'))
+            self.loss += head_loss
 
-        u_lbl = self.U_lbl(sent_states)
-        u_lbl = F.reshape(u_lbl, (-1, batch_size, self.mlp_lbl_units))
+        return arc_logits
 
-        w_lbl = self.W_lbl(sent_states)
-        w_lbl = F.reshape(w_lbl, (-1, batch_size, self.mlp_lbl_units))
+    def _predict_labels(self, sent_embeds, pred_heads, gold_heads, batch_stats,
+                        labels=None):
+        """ Predict the label for each of the arcs predicted in _predict_heads."""
+        batch_size, seq_lengths, max_sent_len = batch_stats
 
-        sent_lbls = []
-        # we start from 1 because we don't consider root
-        for i in range(1, max_sent_len):
-            # num_active
-            num_active = col_lengths[i]
-            # if we are calculating loss create truth variables
-            if calc_loss:
-                # i-1 because sentence has root appended to beginning
-                gold_labels = labels[i-1]
+        calc_loss = labels is not None
+        if calc_loss:
+            labels = chainer.Variable(
+                         self.xp.array(tuple(chain.from_iterable(labels)))
+                     )
 
-                true_heads = gold_heads[i-1]
-            arc_pred = pred_heads[i-1]
+        offsets = self.xp.pad(self.split_to_sents, (1, 0), 'constant', constant_values=0)
 
-            # ================== LABEL PREDICTION ======================
-            # TODO: maybe we should use arc_pred sometimes in training??
-            # NOTE: gold_heads values after num_active gets mutated here
-            # make sure you don't use ignore_label in softmax - even if ok in forward
-            # it will be wrong in backprop (we limit to :self.num_active)
-            # gh_copy = self.xp.copy(gold_heads.data)
-            head_indices = true_heads.data if chainer.config.train else arc_pred
-            head_indices = head_indices[:num_active]
+        if gold_heads is None:
+            # Use predictions at test time
+            arc_indices = offsets + pred_heads
+        else:
+            # Use gold heads at train time (teacher forcing)
+            arc_indices = offsets + self.xp.array(tuple(chain.from_iterable(gold_heads)))
 
-            l_heads = u_lbl[head_indices, self.xp.arange(len(head_indices)), :]
-            l_w = w_lbl[i][:num_active]
-            UWl = F.reshape(F.tanh(l_heads + l_w), (-1, self.mlp_lbl_units))
+        label_logits = self.label_logit[arc_indices]
+        # Choose representations that contain head and label
+        # label_logit is packed 1D from (batch_size, variable seq len, hidden size)
+        # we know variable length from seq_lengths
+        w_lbl = self.W_lbl(label_logits)
+        w_lbl = F.tanh(w_lbl)
 
-            if self.lbl_dropout > 0.:
-                UWl = F.dropout(UWl, ratio=self.lbl_dropout)
+        if self.lbl_dropout > 0.:
+            w_lbl = F.dropout(w_lbl, ratio=self.lbl_dropout)
 
-            lbls = self.V_lblT(UWl)
+        lbl_logits = self.V_lblT(w_lbl)
 
-            # Calculate losses
-            if calc_loss:
-                label_loss = F.sum(F.softmax_cross_entropy(lbls[:num_active], gold_labels[:num_active], reduce='no'))
-                self.loss += label_loss
+        if calc_loss:
+            label_loss = F.sum(F.softmax_cross_entropy(lbl_logits, labels, reduce='no'))
+            self.loss += label_loss
 
-            reshaped_lbls = F.reshape(lbls, (num_active, -1, 1))
-            reshaped_lbls = F.pad(reshaped_lbls,
-                    ((0, batch_size - num_active),(0,0), (0,0)), 'constant')
-            sent_lbls.append(reshaped_lbls)
-        lbls = F.concat(sent_lbls, axis=2)
-        return lbls
+        return lbl_logits
 
     def __call__(self, *inputs, **kwargs):
         """ Expects a batch of sentences 
@@ -264,55 +236,30 @@ class GraphParser(chainer.Chain):
         w = word, p = pos tag, s = sentence
 
         This is as slow as the longest sentence - so bucketing sentences
-        of same size can speed up training - prediction.
+        of same size can speed up training/inference.
         """
         assert(len(inputs) >= 1)
+        if kwargs:
+            lens = [len(inp) for inp in kwargs.values() if inp]
+            assert(all(l == lens[0] for l in lens))
+
         heads = kwargs.get('heads', None)
         labels = kwargs.get('labels', None)
         pos_tags = kwargs.get('pos_tags', None)
 
-        calc_loss = ((heads is not None) and (labels is not None))
-        # in order to process batches of different sized sentences using LSTM in chainer
-        # we need to sort by sentence length.
-        # The longest sentences in tokens need to be at the beginning of the
-        # list, since chainer will simply not update the states corresponding
-        # to the smallest sentences that have 'run out of tokens'.
-        # We keep the permutation indices in order to reorder the output states,
-        # since we want to map the activations to the inputs.
-        perm_indices, sorted_batch = zip(*sorted(enumerate(zip(*inputs)),
-                                                 key=lambda x: len(x[1][0]),
-                                                 reverse=True))
-        sorted_inputs = list(zip(*sorted_batch))
-        if calc_loss:
-            sorted_heads = [heads[i] for i in perm_indices]
-            sorted_labels = [labels[i] for i in perm_indices]
-            if self.predict_pos:
-                sorted_tags = [pos_tags[i] for i in perm_indices]
-            else:
-                sorted_tags = None
-        else:
-            sorted_heads, sorted_labels, sorted_tags = None, None, None
 
-        comb_states_2d = self.encoder(*sorted_inputs)
+        sentence_embeddings = self.encoder(*inputs)
 
         self.loss = 0.
 
         batch_stats = (self.encoder.batch_size,
-                       self.encoder.max_seq_len,
-                       self.encoder.col_lengths)
+                       self.encoder.sequence_lengths,
+                       self.encoder.max_seq_len)
 
-        if calc_loss:
-            # NOTE: We need the heads variables both in predict heads & labels
-            # this is why this is carried out here instead of in predict_heads
-            # heads are seq_len - 1 in length because they don't include ROOT
-            gold_heads = self.encoder.transpose_batch(sorted_heads)
-        else:
-            gold_heads = None
-
-        arcs = self._predict_heads(comb_states_2d,
-                                   self.encoder.mask,
+        arcs = self._predict_heads(sentence_embeddings,
+                                   self.encoder.root_embeddings,
                                    batch_stats,
-                                   sorted_heads=gold_heads)
+                                   heads=heads)
 
         if self.debug or self.visualise:
             self.arcs = cuda.to_cpu(F.softmax(arcs).data)
@@ -329,49 +276,45 @@ class GraphParser(chainer.Chain):
             # axis 2 is one shorter because we don't predict for root
             dd = DependencyDecoder()
             # sent length not taking root into account
-            sent_lengths = [len(sent) for sent in sorted_inputs[0]]
+            sent_lengths = self.encoder.sequence_lengths
+            split_idxs = np.cumsum(sent_lengths[:-1])
+
             arc_preds = []
-            if self.treeify == 'chu':
-                # Just remove cycles, non-projective trees are ok
-                for l, score_mat in zip(sent_lengths, arcs):
-                    # remove fallout from batch size
-                    trunc_score_mat = score_mat[:l+1, :l]
-                    # DependencyDecoder expects a square matrix - fill root col with zeros
-                    trunc_score_mat = np.pad(trunc_score_mat, ((0, 0), (1, 0)), 'constant')
+            for l, score_mat in zip(sent_lengths, np.split(arcs, split_idxs, axis=0)):
+                # remove fallout from batch size
+                trunc_score_mat = score_mat[:, :l+1]
+                # DependencyDecoder expects a square matrix - fill root col with zeros
+                trunc_score_mat = np.pad(trunc_score_mat, ((1, 0), (0, 0)), 'constant').T
+                if self.treeify == 'chu':
+                    # Just remove cycles, non-projective trees are ok
                     nproj_arcs = dd.parse_nonproj(trunc_score_mat)[1:]
                     arc_preds.append(nproj_arcs)
 
                 # arc_preds = np.array([dd.parse_nonproj(each)[1:] for each in pd_arcs])
-            elif self.treeify == 'eisner':
-                # Remove cycles and make sure trees are projective
-                for l, score_mat in zip(sent_lengths, arcs):
-                    # remove fallout from batch size
-                    trunc_score_mat = score_mat[:l+1, :l]
-                    # DependencyDecoder expects a square matrix - fill root col with zeros
-                    trunc_score_mat = np.pad(trunc_score_mat, ((0, 0), (1, 0)), 'constant')
+                elif self.treeify == 'eisner':
+                    # Remove cycles and make sure trees are projective
                     proj_arcs = dd.parse_proj(trunc_score_mat)[1:]
                     arc_preds.append(proj_arcs)
-            else:
-                raise ValueError('Unexpected method')
-            p_arcs = self.encoder.transpose_batch(arc_preds, create_var=False)
+                else:
+                    raise ValueError('Unexpected method')
+            arc_preds = np.hstack(arc_preds)
         else:
             # We ignore tree constraints - head predictions may create cycles
             # we pass predict_labels the gpu object
             arcs = arcs.data
-            p_arcs = self.xp.argmax(arcs, axis=1)
-            arc_preds = cuda.to_cpu(p_arcs)
-            p_arcs = np.swapaxes(p_arcs, 0, 1)
+            arc_preds = self.xp.argmax(arcs, axis=1)
+            arc_preds = cuda.to_cpu(arc_preds)
 
-        lbls = self._predict_labels(comb_states_2d,
-                                    p_arcs,
-                                    gold_heads,
+        lbls = self._predict_labels(sentence_embeddings,
+                                    arc_preds,
+                                    heads,
                                     batch_stats,
-                                    sorted_labels=sorted_labels)
+                                    labels=labels)
 
         if self.predict_pos:
-            tags = self._predict_pos_tags(comb_states_2d,
-                                          batch_stats,
-                                          sorted_pos_tags=sorted_tags)
+            pos_tags = self._predict_pos_tags(sentence_embeddings,
+                                              batch_stats,
+                                              pos_tags=pos_tags)
 
         if self.debug or self.visualise:
             self.lbls = cuda.to_cpu(F.softmax(lbls).data)
@@ -381,33 +324,29 @@ class GraphParser(chainer.Chain):
         # we only bother actually getting the softmax values
         # if we are to visualise the results
         if self.visualise:
-            self._visualise(self.arcs[0], self.lbls[0], sorted_heads[0], sorted_labels[0])
+            self._visualise(self.arcs[0], self.lbls[0], heads[0], labels[0])
 
         # normalize loss over all tokens seen
-        total_tokens = np.sum(self.encoder.col_lengths)
+        total_tokens = np.sum(self.encoder.sequence_lengths)
         self.loss = self.loss / total_tokens
-
-        inv_perm_indices = [perm_indices.index(i) for i in range(len(perm_indices))]
-        if self.debug or self.visualise:
-            self.arcs = self.arcs[inv_perm_indices]
-            self.lbls = self.lbls[inv_perm_indices]
-        # permute back to correct batch order
-        # arcs = arc_preds[inv_perm_indices]
-        arcs = [arc_preds[i] for i in inv_perm_indices]
-        lbls = lbls[inv_perm_indices]
 
         lbl_preds = np.argmax(lbls, axis=1)
 
-        input_sent_lengths = [len(sent) for sent in inputs[0]]
+        split_idxs = np.cumsum(self.encoder.sequence_lengths[:-1])
 
-        arc_preds = [arc_p[:l] for arc_p, l in zip(arcs, input_sent_lengths)]
-        lbl_preds = [lbl_p[:l] for lbl_p, l in zip(lbl_preds, input_sent_lengths)]
+        arc_preds = [arc_p.tolist()
+                     for arc_p
+                     in np.split(arc_preds, split_idxs)]
+        lbl_preds = [lbl_p.tolist()
+                     for lbl_p
+                     in np.split(lbl_preds, split_idxs)]
 
         if self.predict_pos:
-            tags = cuda.to_cpu(tags.data)
-            tags = tags[inv_perm_indices]
+            tags = cuda.to_cpu(pos_tags.data)
             tag_preds = np.argmax(tags, axis=1)
-            tag_preds = [tag_p[:l] for tag_p, l in zip(tag_preds, input_sent_lengths)]
+            tag_preds = [tag_p.tolist()
+                         for tag_p
+                         in np.split(tag_preds, split_idxs)]
 
             return arc_preds, lbl_preds, tag_preds
 

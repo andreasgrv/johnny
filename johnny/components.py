@@ -3,8 +3,7 @@ import numpy as np
 import chainer
 import chainer.functions as F
 import chainer.links as L
-import chainer.links.connection.n_step_lstm as chainer_nstep
-from johnny.extern import NStepLSTMBase
+from chainer.links.connection.n_step_lstm import NStepLSTM, NStepBiLSTM
 from johnny.vocab import augment_seq, augment_seq_nested, augment_word, reserved
 
 CHAINER_IGNORE_LABEL = -1
@@ -86,7 +85,6 @@ class SubwordEmbedder(chainer.Chain):
 class SentenceEncoder(chainer.Chain):
     """Encodes a sentence word by word using a recurrent neural network."""
 
-
     CHAINER_IGNORE_LABEL = -1
 
     def __init__(self, embedder, use_bilstm=True, num_layers=1,
@@ -95,13 +93,16 @@ class SentenceEncoder(chainer.Chain):
         super(SentenceEncoder, self).__init__()
         with self.init_scope():
             self.embedder = embedder
-            # we already have sorted input, so we removed the code that permutes
-            # input and output (hence why we don't use the chainer class)
-            self.rnn = NStepLSTMBase(num_layers,
+            if use_bilstm:
+                self.rnn = NStepBiLSTM(num_layers,
+                                       self.embedder.out_size,
+                                       num_units,
+                                       dropout)
+            else:
+                self.rnn = NStepLSTM(num_layers,
                                      self.embedder.out_size,
                                      num_units,
-                                     dropout,
-                                     use_bi_direction=use_bilstm)
+                                     dropout)
 
         self.use_bilstm = use_bilstm
         self.num_layers = num_layers
@@ -111,41 +112,45 @@ class SentenceEncoder(chainer.Chain):
         self.mask = None
         self.col_lengths = None
 
-    def transpose_batch(self, seqs, create_var=True):
-        """transpose list of sequences of different length
-
-        NOTE: seqs must be already sorted from longest to
-        shortest (longest at 0 index) if feeding into lstm.
-        Example:
-
-        [[1,2,3], [4,5], [6]] -> [[1,4,6],[2,5],[3]]
+    def _encode_words_as_chars(self, sents):
+        """Encode words as tuples of characters. Only encode words once, use
+        lookup table to get embeddings. Returns a list of variables, one for
+        each sentence with shape (num_words_in_sentence, 1)
         """
-        max_seq_len = len(seqs[0])
-        if create_var:
-            batch = [chainer.Variable(self.xp.array([sent[i]
-                                                    for sent in seqs
-                                                    if i < len(sent)],
-                                      dtype=self.xp.int32))
-                     for i in range(max_seq_len)]
-        else:
-            batch = [self.xp.array([sent[i]
-                                    for sent in seqs
-                                    if i < len(sent)],
-                                   dtype=self.xp.int32)
-                     for i in range(max_seq_len)]
-        return batch
+        # pad each word with START_WORD END_WORD
+        sents = tuple(tuple(map(augment_word, s)) for s in sents)
+        # unique words, each word is represented as a tuple of chars
+        word_set = set(chain.from_iterable(sents))
+        # also include the sentence level markers as single words [token]
+        word_set.update([(reserved.START_SENTENCE,),
+                         (reserved.END_SENTENCE,),
+                         (reserved.ROOT,)])
+
+        word_encoder = self.embedder.word_encoder
+        word_encoder.encode_words(word_set)
+
+        encoded_sents = [self._seq_2_var(
+                            tuple(map(word_encoder.word_to_index,
+                                  augment_seq_nested(s)))
+                            )
+                         for s in sents]
+        return encoded_sents
+
+    def _encode_sequences(self, seqs):
+        """Prepend and append placeholder tokens for start/end sentence.
+        Then encode into chainer variables."""
+        return [[self._seq_2_var(s) for s in map(augment_seq, seq)]
+                for seq in seqs]
+
+    def _seq_2_var(self, seq):
+        """Convert a sequence of integer encoded tokens to chainer variable."""
+        return chainer.Variable(self.xp.array(seq, dtype=self.xp.int32))
 
     def __call__(self, *in_seqs):
-        """Creates lstm embedding of the sentence and pos tags.
-        If use_bilstm is specified - the embedding is formed from
-        concatenating the forward and backward activations
-        corresponding to each word.
+        """Creates lstm embedding of the inputs. Sentences are expected to be
+        element 0 in the in_seqs array.
         """
         sents = in_seqs[0]
-        # all sequences in in_seqs are assumed to have length corresponding
-        # to in_seqs[0]
-        # we add 1 because we are augmenting the sentence with a ROOT symbol 
-        self.max_seq_len = len(sents[0]) + 1
         self.batch_size = len(sents)
 
         # before we modify input we check if our embedder handles subword
@@ -155,97 +160,51 @@ class SentenceEncoder(chainer.Chain):
         # batch). We assume the subword tokens are passed in a 3D array
         # as in_seqs[0] -> sentences x words in sentence x tokens in words
         if getattr(self.embedder, 'is_subword', False):
-            # pad each word with START_WORD END_WORD
-            sents = tuple(tuple(map(augment_word, s)) for s in sents)
-            # unique list of words sorted from longest to shortest
-            word_set = set(chain.from_iterable(sents))
-            # also include the sentence level markers
-            # as single words [token]
-            word_set.update([(reserved.START_SENTENCE,),
-                             (reserved.END_SENTENCE,),
-                             (reserved.ROOT,)])
-            word_encoder = self.embedder.word_encoder
-            word_encoder.encode_words(word_set)
             # replace 3D input with 2D - words replaced with hash
-            fwd_first = tuple(tuple(map(word_encoder.word_to_index,
-                                        augment_seq_nested(s)))
-                              for s in sents)
-            fwd_rest = [self.transpose_batch(tuple(map(augment_seq, seq)))
-                        for seq in in_seqs[1:]]
-            fwd = [self.transpose_batch(fwd_first)]
-            fwd.extend(fwd_rest)
+            inputs = [self._encode_words_as_chars(sents)]
+            inputs.extend(self._encode_sequences(in_seqs[1:]))
         else:
-            # we augment sequence here - augmenting with START, ROOT at the
-            # beginning and END at the you know where
-            # turn batch_size x seq_len -> seq_len x batch_size
+            # we augment sequence here - augmenting with START at the
+            # beginning and END at the end (START is used as ROOT too)
+            # there is no point in adding a separate token as P(ROOT | START)
+            # would be one.
             # NOTE: seq_len is variable - we aren't padding
-            fwd = [self.transpose_batch(tuple(map(augment_seq, seq)))
-                   for seq in in_seqs]
+            inputs = self._encode_sequences(in_seqs)
 
-        # collapse all ids into a vector
-        embeddings = self.embedder(*(F.concat(f, axis=0) for f in fwd))
+        # This sequence length is the augmented sequence length
+        self.sequence_lengths = np.array([len(sent) for sent in inputs[0]])
 
-        col_lengths = [len(col) for col in fwd[0]]
+        # collapse inputs into a embedding vectors
+        embeddings = self.embedder(*(F.concat(inp, axis=0)
+                                   for inp in inputs))
 
-        # use np because cumsum crashes gpu - I know, right?
-        batch_split = np.cumsum(col_lengths[:-1])
+        batch_split = np.cumsum(self.sequence_lengths[:-1])
         # split back to batch size
         batch_embeddings = F.split_axis(embeddings, batch_split, axis=0)
 
         _, _, states = self.rnn(None, None, batch_embeddings)
 
         # we don't use the START and END encoded states in attention
-        # so we get rid of them from states and col_lengths
-        # also creates col_lengths
-        # states = self.deaugment(states)
-        keep = list()
-        self.col_lengths = []
-        # END tokens are spread out across the matrix since
-        # we have variable length inputs (sorted)
-        # eg:  S R 1 2 3 4 E     We want to get rid of S and E without
-        #      S R 5 6 E         transposing and stuff (we want to keep
-        #      S R 7 E           the root embedding R)
-        #
-        # to:  1 2 3 4
-        #      5 6
-        #      7
-        for i in range(1, len(states) - 1):
-            # if the next column is shorter, it means that in the original
-            # data this column was shorter. If not clear imagine a layer of
-            # blocks falling when playing tetris.
-            diff = len(states[i]) - len(states[i+1])
-            if diff > 0:
-                clean = states[i][:-diff]
-            else:
-                clean = states[i]
-            col_len = len(clean)
-            self.col_lengths.append(col_len)
-            keep.append(F.pad(clean,
-                              ((0, self.batch_size - col_len), (0,0)),
-                              'constant',
-                              constant_values=0.))
-        states = F.vstack(keep)
-        # discard first and last column. The first column always contains
-        # START. The last column contains only END but END tokens are
-        # spread throughout.
+        # so we get rid of them from states (they are in position 0 and -1)
+        keep = [sent_state[1: -1] for sent_state in states]
+        # Keep the embeddings for START sentence as the "root" embeddings
+        # if we want to do dependency parsing as head selection
+        root_embeddings = [sent_state[0] for sent_state in states]
 
-        # states = F.vstack((F.pad(s,
-        #                          ((0, self.batch_size - len(s)), (0,0)),
-        #                          'constant',
-        #                          constant_values=0.)
-        #                    for s in states))
+        sentence_embeddings = F.vstack(keep)
+        self.root_embeddings = F.vstack(root_embeddings)
+        # Since we removed START and END, need to update the sequence lengths
+        self.sequence_lengths -= 2
+        self.max_seq_len = self.sequence_lengths.max()
 
-        mask_shape = (self.batch_size, self.max_seq_len)
-        self.mask = self.xp.ones(mask_shape, dtype=self.xp.bool_)
-        for i, l in enumerate(self.col_lengths):
-            self.mask[l:, i] = False
-
+        # TODO: Do we need padding?
         if getattr(self.embedder, 'is_subword', False):
             # Remember to clear cache
             self.embedder.word_encoder.clear_cache()
 
-        # returns 2d (batch_size x max_sentence_length) x num_hidden
-        return states
+        # returns 2d (batch_size x variable_length) x num_hidden
+        # NOTE: in order to reconstruct batch need sequence lengths
+        return sentence_embeddings
 
 
 class LSTMWordEncoder(chainer.Chain):
@@ -257,13 +216,16 @@ class LSTMWordEncoder(chainer.Chain):
         with self.init_scope():
             self.embed_layer = L.EmbedID(vocab_size, num_units,
                                          ignore_label=CHAINER_IGNORE_LABEL)
-            self.rnn = chainer_nstep.NStepLSTMBase(num_layers,
-                                                   num_units,
-                                                   num_units,
-                                                   rec_dropout,
-                                                   None,
-                                                   None,
-                                                   use_bi_direction=use_bilstm)
+            if use_bilstm:
+                self.rnn = NStepBiLSTM(num_layers,
+                                       num_units,
+                                       num_units,
+                                       rec_dropout)
+            else:
+                self.rnn = NStepLSTM(num_layers,
+                                     num_units,
+                                     num_units,
+                                     rec_dropout)
         self.vocab_size = vocab_size
         self.num_units = num_units
         self.num_layers = num_layers
@@ -282,7 +244,7 @@ class LSTMWordEncoder(chainer.Chain):
         batch_split = np.cumsum(word_lengths[:-1])
 
         word_vars = [chainer.Variable(self.xp.array(w, dtype=self.xp.int32))
-                                      for w in word_list]
+                     for w in word_list]
         embeddings = self.embed_layer(F.concat(word_vars, axis=0))
 
         if self.inp_dropout > 0.:

@@ -178,7 +178,7 @@ class DependencyDecoder:
         final_edges = self.chu_liu_edmonds(scores_copy, curr_nodes, old_I, old_O, {}, reps)
         heads = np.zeros(nw+1, int)
         heads[0] = -1
-        for key in final_edges.keys():
+        for key in list(final_edges.keys()):
             ch = key
             pr = final_edges[key]
             heads[ch] = pr
@@ -266,13 +266,13 @@ class DependencyDecoder:
         max_cyc = 0
         wh_cyc = 0
         for cycle in cycles:
-            if np.size(cycle.keys()) > max_cyc:
-                max_cyc = np.size(cycle.keys())
+            if np.size(list(cycle.keys())) > max_cyc:
+                max_cyc = np.size(list(cycle.keys()))
                 wh_cyc = cycle
 
         cycle = wh_cyc
-        cyc_nodes = list(cycle.keys())
-        rep = next(iter(cyc_nodes))
+        cyc_nodes = sorted(list(cycle.keys()))
+        rep = cyc_nodes[0]
 
         if self.verbose:
             print("Found Cycle\n")
@@ -314,7 +314,7 @@ class DependencyDecoder:
         rep_cons = []
         for i in range(0, np.size(cyc_nodes)):
             rep_con = {}
-            keys = sorted(list(reps[int(cyc_nodes[i])].keys()))
+            keys = sorted(reps[int(cyc_nodes[i])].keys())
             if self.verbose:
                 print("{0}: ".format(cyc_nodes[i]))
             for key in keys:
@@ -357,127 +357,3 @@ class DependencyDecoder:
             l = par[l]
 
         return final_edges
-
-# code modified from chainer https://github.com/chainer/chainer/blob/master/chainer/links/connection/n_step_lstm.py
-import numpy
-import six
-
-from chainer import cuda
-from chainer.functions.array import permutate
-from chainer.functions.array import transpose_sequence
-from chainer.functions.connection import n_step_lstm as rnn
-from chainer.initializers import normal
-from chainer import link
-from chainer.links.connection import n_step_rnn
-from chainer.utils import argument
-from chainer import variable
-
-
-class NStepLSTMBase(link.ChainList):
-    """Base link class for Stacked LSTM/BiLSTM links.
-    This link is base link class for :func:`chainer.links.NStepLSTM` and
-    :func:`chainer.links.NStepBiLSTM`.
-    This link's behavior depends on argument, ``use_bi_direction``.
-    Args:
-        n_layers (int): Number of layers.
-        in_size (int): Dimensionality of input vectors.
-        out_size (int): Dimensionality of hidden states and output vectors.
-        dropout (float): Dropout ratio.
-        use_bi_direction (bool): if ``True``, use Bi-directional LSTM.
-    .. seealso::
-        :func:`chainer.functions.n_step_lstm`
-        :func:`chainer.functions.n_step_bilstm`
-    """
-
-    def __init__(self, n_layers, in_size, out_size, dropout, use_bi_direction,
-                 **kwargs):
-        argument.check_unexpected_kwargs(
-            kwargs, use_cudnn='use_cudnn argument is not supported anymore. '
-            'Use chainer.using_config')
-        argument.assert_kwargs_empty(kwargs)
-
-        weights = []
-        direction = 2 if use_bi_direction else 1
-        for i in six.moves.range(n_layers):
-            for di in six.moves.range(direction):
-                weight = link.Link()
-                with weight.init_scope():
-                    for j in six.moves.range(8):
-                        if i == 0 and j < 4:
-                            w_in = in_size
-                        elif i > 0 and j < 4:
-                            w_in = out_size * direction
-                        else:
-                            w_in = out_size
-                        w = variable.Parameter(
-                            normal.Normal(numpy.sqrt(1. / w_in)),
-                            (out_size, w_in))
-                        b = variable.Parameter(0, (out_size,))
-                        setattr(weight, 'w%d' % j, w)
-                        setattr(weight, 'b%d' % j, b)
-                weights.append(weight)
-
-        super(NStepLSTMBase, self).__init__(*weights)
-
-        self.n_layers = n_layers
-        self.dropout = dropout
-        self.out_size = out_size
-        self.direction = direction
-        self.rnn = rnn.n_step_bilstm if use_bi_direction else rnn.n_step_lstm
-
-    def init_hx(self, xs):
-        first = xs[0]
-        shape = (self.n_layers * self.direction, first.shape[0], self.out_size)
-        with cuda.get_device_from_id(self._device_id):
-            hx = variable.Variable(self.xp.zeros(shape, dtype=first.dtype))
-        return hx
-
-    def __call__(self, hx, cx, xs, **kwargs):
-        """__call__(self, hx, cx, xs)
-        Calculate all hidden states and cell states.
-        .. warning::
-           ``train`` argument is not supported anymore since v2.
-           Instead, use ``chainer.using_config('train', train)``.
-           See :func:`chainer.using_config`.
-        Args:
-            hx (~chainer.Variable or None): Initial hidden states. If ``None``
-                is specified zero-vector is used.
-            cx (~chainer.Variable or None): Initial cell states. If ``None``
-                is specified zero-vector is used.
-            xs (list of ~chianer.Variable): List of input sequences.
-                Each element ``xs[i]`` is a :class:`chainer.Variable` holding
-                a sequence.
-        """
-        argument.check_unexpected_kwargs(
-            kwargs, train='train argument is not supported anymore. '
-            'Use chainer.using_config')
-        argument.assert_kwargs_empty(kwargs)
-
-        assert isinstance(xs, (list, tuple))
-        # indices = n_step_rnn.argsort_list_descent(xs)
-
-        # xs = n_step_rnn.permutate_list(xs, indices, inv=False)
-        if hx is None:
-            hx = self.init_hx(xs)
-        # else:
-        #     hx = permutate.permutate(hx, indices, axis=1, inv=False)
-
-        if cx is None:
-            cx = self.init_hx(xs)
-        # else:
-        #     cx = permutate.permutate(cx, indices, axis=1, inv=False)
-
-        # trans_x = transpose_sequence.transpose_sequence(xs)
-
-        ws = [[w.w0, w.w1, w.w2, w.w3, w.w4, w.w5, w.w6, w.w7] for w in self]
-        bs = [[w.b0, w.b1, w.b2, w.b3, w.b4, w.b5, w.b6, w.b7] for w in self]
-
-        hy, cy, trans_y = self.rnn(
-            self.n_layers, self.dropout, hx, cx, ws, bs, xs)
-
-        # hy = permutate.permutate(hy, indices, axis=1, inv=True)
-        # cy = permutate.permutate(cy, indices, axis=1, inv=True)
-        # ys = transpose_sequence.transpose_sequence(trans_y)
-        # ys = n_step_rnn.permutate_list(ys, indices, inv=True)
-
-        return hy, cy, trans_y

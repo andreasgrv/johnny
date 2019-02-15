@@ -1,5 +1,4 @@
-chainer==3.5.0
-# cupy==2.5.0
+chainer==5.2
 six==1.10.0
 dill==0.2.7
 PyYAML==3.13

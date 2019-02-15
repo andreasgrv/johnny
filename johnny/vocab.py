@@ -16,22 +16,17 @@ RESERVED = dict(START_SENTENCE=0,
 
 reserved = namedtuple('Reserved', RESERVED.keys())(**RESERVED)
 
+
 def augment_seq_nested(seq):
-    # when we pad sentence that has been encoded on the subword level
-    # we insert the index into a list so that it can be encoded
-    # on the subword level - we don't want to have to deal with this
-    # as a special case and encode 3 tokens on the word level!
     return tuple(chain(
-            ([reserved.START_SENTENCE],),
-            ([reserved.ROOT],),
+            ((reserved.START_SENTENCE,),),
             seq,
-            ([reserved.END_SENTENCE],)))
+            ((reserved.END_SENTENCE,),)))
 
 
 def augment_seq(seq):
     return tuple(chain(
             (reserved.START_SENTENCE,),
-            (reserved.ROOT,),
             seq,
             (reserved.END_SENTENCE,)))
 
@@ -51,7 +46,7 @@ class Vocab(object):
     UNK is assigned the token 0 - because we like being arbitrary.
     The rest of the known tokens are sorted by frequency and assigned indices
     in such a manner.
-    
+
     We keep the number of counts in order to be able to update our
     vocabulary later on. However, we throw away counts below or
     equal to threshold counts - because zipf's law and we don't
