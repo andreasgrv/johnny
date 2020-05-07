@@ -105,7 +105,7 @@ the two words are predicted to have as can be seen in the row labelled Pred labe
 The Real head and Real label rows show which word is the correct head and label for the
 training data - namely what the parser should have predicted.
 
-![A visualisation of the parser running in the terminal](http://grv.overfit.xyz/parser.gif)
+![A visualisation of the parser running in the terminal](http://grv.overfit.xyz/static/images/parser.gif)
 
 To enable the above visualisation during training you can specify the *--visualise* option.
 
